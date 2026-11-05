@@ -14,7 +14,7 @@ use App::WebPerimeterScan::Ports;
 use App::WebPerimeterScan::Source;
 use App::WebPerimeterScan::TLS;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 # Crawling is for finding pages that share the site's header policy, not for
 # mirroring the site.  These are skipped so a scan does not waste requests on
@@ -110,6 +110,46 @@ sub run
 	return $self->{findings};
 }
 
+# The parsed headers of a response plus the raw block exactly as it arrived,
+# so a finding can be checked after the fact - by another person, or on a
+# machine that cannot reach the host at all.  Duplicates are preserved
+# because a second CSP or Set-Cookie header is part of the evidence.
+sub _record_response
+{
+	my ($self, $url, $method, $res, $note) = @_;
+
+	return unless $res && !$res->{error};
+
+	my %headers;
+	for my $name (keys %{ $res->{headers} || {} }) {
+		$headers{$name} = [ @{ $res->{headers}{$name} } ];
+	}
+
+	my $record = {
+		url          => $url,
+		method       => $method || 'GET',
+		status       => $res->{status},
+		http_version => $res->{http_version},
+		reason       => $res->{reason},
+		headers      => \%headers,
+		raw          => $res->{raw_headers},
+	};
+	$record->{note} = $note if defined $note && length $note;
+
+	return $record;
+}
+
+sub _keep_response
+{
+	my ($self, $report, $url, $method, $res, $note) = @_;
+
+	my $record = $self->_record_response($url, $method, $res, $note) or return;
+
+	push @{ $report->{responses} }, $record;
+
+	return $record;
+}
+
 sub _say
 {
 	my ($self, $message) = @_;
@@ -155,6 +195,10 @@ sub _scan_host
 	$report->{base} = $base;
 	$self->_say("base URL $base");
 
+	# The exact block the header checks were run against, so the report can
+	# be audited later without sending the request again.
+	$report->{response} = $self->_record_response($base, 'GET', $root, 'main page');
+
 	# Inspect TLS whenever HTTPS is actually served, and also when 443 is
 	# open but the handshake failed - that failure is itself a finding.
 	my $tls_port;
@@ -178,14 +222,18 @@ sub _scan_host
 
 	# Same-origin probes: a foreign Origin header, an OPTIONS request, and
 	# the plaintext hop that HSTS depends on.
-	my $cors = $self->{http}->fetch($base, headers => [ 'Origin: ' . App::WebPerimeterScan::Checks::probe_origin() ]);
+	my $origin = App::WebPerimeterScan::Checks::probe_origin();
+	my $cors = $self->{http}->fetch($base, headers => [ "Origin: $origin" ]);
 	App::WebPerimeterScan::Checks::check_cors($self->{findings}, host => $host, url => $base, res => $cors);
+	$self->_keep_response($report, $base, 'GET', $cors, "Origin: $origin");
 
 	my $options = $self->{http}->fetch($base, method => 'OPTIONS');
 	App::WebPerimeterScan::Checks::check_methods($self->{findings}, host => $host, url => $base, res => $options);
+	$self->_keep_response($report, $base, 'OPTIONS', $options);
 
 	if($base =~ m{^https://}i && !$entry->{port}) {
 		my $plain = $self->{http}->fetch("http://$host/");
+		$self->_keep_response($report, "http://$host/", 'GET', $plain, 'plaintext hop');
 		if(!$plain->{error}) {
 			my $location = $plain->{headers}{location} ? $plain->{headers}{location}[-1] : '';
 			my $status = $plain->{status} // 0;

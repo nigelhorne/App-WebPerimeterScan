@@ -1,5 +1,14 @@
 Revision history for App::WebPerimeterScan
 
+0.03  2026-11-05
+    - Record the response header block behind the header findings in each
+      host entry of the report, parsed and raw, so a finished scan can be
+      audited without repeating the requests.  The page, the plaintext hop
+      and the CORS and OPTIONS probes are all kept.
+    - Fall back to connecting one port at a time where fcntl(F_SETFL) does
+      not exist.  Windows has no such flags, and the scan died on the
+      undefined F_GETFL macro instead of returning a result.
+
 0.02  2026-11-05
     - Add a source-aware pass.  --docroot resolves each finding's URL to the
       real file under the document root, --source maps it to the route that

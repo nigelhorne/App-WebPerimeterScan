@@ -171,6 +171,8 @@ sub fetch
 		body          => $body,
 		truncated     => $truncated,
 		content_type  => ($headers{'content-type'} ? $headers{'content-type'}[0] : ''),
+		# The header block as it arrived, for reports that have to show it.
+		raw_headers   => $head,
 		elapsed       => time - $started,
 	};
 }

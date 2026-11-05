@@ -61,6 +61,26 @@ my $unresolvable = App::WebPerimeterScan::Ports->scan(
 );
 ok($unresolvable->{error}, 'unresolvable host reports an error');
 
+# The serial path is what Windows uses, since it has no fcntl(F_SETFL);
+# exercise it here so the fallback cannot rot on the platforms that have it.
+{
+	local $App::WebPerimeterScan::Ports::NONBLOCKING = 0;
+
+	my $serial = App::WebPerimeterScan::Ports->scan(
+		host    => '127.0.0.1',
+		ports   => [ $open_port, $closed_port ],
+		timeout => 2,
+		banner  => 0,
+	);
+
+	is($serial->{error}, undef, 'serial fallback completes');
+	is_deeply(
+		[ map { $_->{port} } @{ $serial->{open} } ],
+		[ $open_port ],
+		'serial fallback finds only the listening port',
+	);
+}
+
 close $listener;
 
 ok(scalar @App::WebPerimeterScan::Ports::DEFAULT_PORTS > 0,

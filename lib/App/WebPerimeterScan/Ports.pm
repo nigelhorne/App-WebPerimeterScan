@@ -6,10 +6,19 @@ use warnings;
 use Errno qw(EINPROGRESS EWOULDBLOCK);
 use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use IO::Select;
+use IO::Socket::INET ();
 use Socket qw(AF_INET SOCK_STREAM SOL_SOCKET SO_ERROR inet_aton sockaddr_in);
 use Time::HiRes qw(time);
 
 our $VERSION = '0.01';
+
+# F_GETFL and friends are not defined on Windows, where Fcntl dies with "Your
+# vendor has not defined Fcntl macro" as soon as the constant is reached.  The
+# flags are probed once here, and the parallel batch is only used where they
+# exist; everywhere else the scan connects one port at a time instead.
+our $NONBLOCKING = eval {
+	Fcntl::F_GETFL() + Fcntl::F_SETFL() + Fcntl::O_NONBLOCK() >= 0;
+} ? 1 : 0;
 
 # Published services worth knowing about.  Keep this list short: a long list
 # is slow and noisy, and this is an attack-surface summary, not nmap.
@@ -64,6 +73,30 @@ sub scan
 
 	my $proto = getprotobyname('tcp');
 	return { host => $host, open => [], error => 'no tcp protocol' } unless $proto;
+
+	my @open = $NONBLOCKING
+		? _connect_parallel($ip, $proto, $ports, $timeout)
+		: _connect_serial($host, $ports, $timeout);
+
+	@open = sort { $a->{port} <=> $b->{port} } @open;
+
+	if($banner) {
+		for my $entry (@open) {
+			$entry->{banner} = _banner($host, $entry->{port}, 0.6);
+		}
+	}
+
+	return {
+		host => $host,
+		open => \@open,
+		error => undef,
+	};
+}
+
+# One non-blocking batch, resolved through a single select.
+sub _connect_parallel
+{
+	my ($ip, $proto, $ports, $timeout) = @_;
 
 	my %by_fd;
 	my $select = IO::Select->new;
@@ -123,19 +156,33 @@ sub scan
 		close $entry->{sock};
 	}
 
-	@open = sort { $a->{port} <=> $b->{port} } @open;
+	return @open;
+}
 
-	if($banner) {
-		for my $entry (@open) {
-			$entry->{banner} = _banner($host, $entry->{port}, 0.6);
-		}
+# Where the socket flags cannot be set, a batch would simply block on the
+# first filtered port, so connect one at a time with a socket timeout.  Slower
+# against a firewall, but correct on Windows and on any other platform whose
+# fcntl() has no file-status flags.
+sub _connect_serial
+{
+	my ($host, $ports, $timeout) = @_;
+
+	my @open;
+	for my $port (@{ $ports }) {
+		next unless $port =~ /^\d+$/ && $port > 0 && $port < 65_536;
+
+		my $sock = IO::Socket::INET->new(
+			PeerAddr => $host,
+			PeerPort => $port,
+			Proto    => 'tcp',
+			Timeout  => $timeout,
+		) or next;
+
+		push @open, { port => $port + 0, banner => '' };
+		close $sock;
 	}
 
-	return {
-		host => $host,
-		open => \@open,
-		error => undef,
-	};
+	return @open;
 }
 
 # Best-effort, read-only: many services announce themselves before the
