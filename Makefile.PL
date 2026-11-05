@@ -22,6 +22,8 @@ WriteMakefile(
 		'Time::HiRes'            => 1.97,
 		'Time::Local'            => 1.28,
 		'URI'                    => 1.70,
+	}, TEST_REQUIRES => {
+		'Test::Fatal' => 0,
 	},
 	ABSTRACT      => 'Check the parts of your own web perimeter that an outsider can reach',
 	AUTHOR        => 'Nigel Horne <njh@nigelhorne.com>',

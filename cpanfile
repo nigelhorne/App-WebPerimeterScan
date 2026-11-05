@@ -17,6 +17,10 @@ requires 'Time::HiRes', '1.97';
 requires 'Time::Local', '1.28';
 requires 'URI', '1.70';
 
+on 'test' => sub {
+	requires 'Test::Fatal';
+};
+
 on 'develop' => sub {
 	requires 'Devel::Cover';
 	requires 'Perl::Critic';
