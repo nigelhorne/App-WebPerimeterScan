@@ -1,8 +1,6 @@
-Changes
-MANIFEST
-Makefile.PL
-README.md
 bin/webperimeter
+Changes
+cpanfile
 lib/App/WebPerimeterScan.pm
 lib/App/WebPerimeterScan/Checks.pm
 lib/App/WebPerimeterScan/Findings.pm
@@ -12,6 +10,10 @@ lib/App/WebPerimeterScan/Report.pm
 lib/App/WebPerimeterScan/Scope.pm
 lib/App/WebPerimeterScan/Source.pm
 lib/App/WebPerimeterScan/TLS.pm
+LICENSE
+Makefile.PL
+MANIFEST
+README.md
 t/00-load.t
 t/checks.t
 t/ports.t
