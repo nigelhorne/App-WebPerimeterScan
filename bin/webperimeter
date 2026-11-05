@@ -1,0 +1,209 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use FindBin qw($Bin);
+
+BEGIN {
+	unshift @INC, "$Bin/../lib" if -d "$Bin/../lib/App/WebPerimeterScan";
+}
+
+use Getopt::Long;
+use POSIX qw(strftime);
+
+# -v and -V must stay distinct; Getopt::Long ignores case by default.
+Getopt::Long::Configure(qw(no_ignore_case));
+
+use App::WebPerimeterScan;
+use App::WebPerimeterScan::Ports;
+use App::WebPerimeterScan::Report;
+use App::WebPerimeterScan::Scope;
+
+my %opt = (
+	format  => 'text',
+	fail_on => 'high',
+);
+
+GetOptions(
+	'scope|s=s'        => \$opt{scope},
+	'authorized|authorised' => \$opt{authorized},
+	'format=s'         => \$opt{format},
+	'output|o=s'       => \$opt{output},
+	'ports=s'          => \$opt{ports},
+	'docroot=s@'       => \$opt{docroot},
+	'source=s@'        => \$opt{source},
+	'timeout=i'        => \$opt{timeout},
+	'connect-timeout=i' => \$opt{connect_timeout},
+	'delay=f'          => \$opt{delay},
+	'depth|d=i'        => \$opt{depth},
+	'max-urls=i'       => \$opt{max_urls},
+	'no-path-probes'   => sub { $opt{path_probes} = 0 },
+	'reflection-probe' => \$opt{reflection},
+	'allow-private'    => \$opt{allow_private},
+	'dry-run'          => \$opt{dry_run},
+	'fail-on=s'        => \$opt{fail_on},
+	'color!'           => \$opt{color},
+	'verbose|v'        => \$opt{verbose},
+	'help|h'           => \$opt{help},
+	'version|V'        => \$opt{version},
+) or usage(2);
+
+if($opt{help}) {
+	usage(0);
+}
+
+if($opt{version}) {
+	print "webperimeter $App::WebPerimeterScan::VERSION\n";
+	exit 0;
+}
+
+usage(2) unless $opt{scope};
+usage(2) unless $opt{format} =~ /^(?:text|json|html)$/;
+
+my $scope = App::WebPerimeterScan::Scope->new(
+	allow_private => $opt{allow_private},
+);
+
+eval { $scope->load_file($opt{scope}) };
+if(my $error = $@) {
+	chomp $error;
+	print STDERR "webperimeter: $error\n";
+	exit 2;
+}
+
+for my $dir (@{ $opt{docroot} || [] }) {
+	unless(-d $dir) {
+		print STDERR "webperimeter: --docroot $dir is not a directory\n";
+		exit 2;
+	}
+}
+
+for my $dir (@{ $opt{source} || [] }) {
+	unless(-d $dir) {
+		print STDERR "webperimeter: --source $dir is not a directory\n";
+		exit 2;
+	}
+}
+
+if($opt{dry_run}) {
+	print "Would scan, in this order:\n";
+	for my $entry ($scope->hosts) {
+		my $where = $entry->{port} ? "$entry->{host}:$entry->{port}" : $entry->{host};
+		print "  $where";
+		print " (private address space - requires --allow-private)" if $scope->is_private_target($entry->{host});
+		print "\n";
+	}
+	print "\nPorts: " . join(',', @{ $opt{ports} ? [ split /[,\s]+/, $opt{ports} ] : \@App::WebPerimeterScan::Ports::DEFAULT_PORTS }) . "\n";
+	print 'Docroots: ' . join(', ', @{ $opt{docroot} }) . "\n" if $opt{docroot};
+	print 'Source: ' . join(', ', @{ $opt{source} }) . "\n" if $opt{source};
+	exit 0;
+}
+
+unless($opt{authorized}) {
+	print STDERR <<'EOF';
+webperimeter: refusing to send traffic without --authorized.
+
+Only scan hosts you own or have written permission to test.  Passing
+--authorized confirms that the hosts in the scope file are yours.
+
+Use --dry-run to see what would be scanned without sending anything.
+EOF
+	exit 2;
+}
+
+my $scanner = App::WebPerimeterScan->new(
+	scope           => $scope,
+	timeout         => $opt{timeout} // 10,
+	connect_timeout => $opt{connect_timeout} // 3,
+	delay           => defined $opt{delay} ? $opt{delay} : 0.5,
+	depth           => $opt{depth} // 1,
+	max_urls        => $opt{max_urls} // 40,
+	path_probes     => exists $opt{path_probes} ? $opt{path_probes} : 1,
+	reflection      => $opt{reflection},
+	allow_private   => $opt{allow_private},
+	verbose         => $opt{verbose},
+	ports           => $opt{ports} ? [ split /[,\s]+/, $opt{ports} ] : undef,
+	docroots        => $opt{docroot} || [],
+	source_dirs     => $opt{source}  || [],
+);
+
+my $findings = $scanner->run;
+
+my %meta = (
+	version      => $App::WebPerimeterScan::VERSION,
+	generated    => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime),
+	scope_source => $scope->source,
+	requests     => $scanner->http->requests,
+	hosts        => $scanner->host_reports,
+	# Colour is for a terminal; a file or a pipe gets plain text.
+	color        => defined $opt{color} ? $opt{color} : ($opt{output} ? 0 : undef),
+);
+
+my $rendered =
+	  $opt{format} eq 'json' ? App::WebPerimeterScan::Report::as_json($findings, %meta)
+	: $opt{format} eq 'html' ? App::WebPerimeterScan::Report::as_html($findings, %meta)
+	:                          App::WebPerimeterScan::Report::as_text($findings, %meta);
+
+if($opt{output}) {
+	open my $fh, '>', $opt{output} or die "Cannot write $opt{output}: $!\n";
+	print $fh $rendered;
+	close $fh;
+	print "Report written to $opt{output}\n" unless $opt{verbose};
+} else {
+	print $rendered;
+}
+
+my $fail_on = $opt{fail_on};
+exit 0 if $fail_on eq 'never';
+
+unless($fail_on =~ /^(?:critical|high|medium|low|info)$/) {
+	print STDERR "webperimeter: --fail-on must be critical, high, medium, low, info or never\n";
+	exit 2;
+}
+
+my @failing = $findings->at_or_above($fail_on);
+exit(@failing ? 1 : 0);
+
+sub usage
+{
+	my ($status) = @_;
+
+	print STDERR <<'EOF';
+Usage: webperimeter --scope FILE [options]
+
+  -s, --scope FILE        Hosts you are authorised to test (required)
+      --authorized        Confirm the scope hosts are yours (required to scan)
+      --dry-run           Show what would be scanned, send nothing
+  -f, --format FORMAT     text (default), json or html
+  -o, --output FILE       Write the report to FILE instead of stdout
+      --ports LIST        Comma separated ports to probe
+      --docroot DIR       Docroot to resolve discovered paths against (repeatable)
+      --source DIR        Source tree to map endpoints back to code (repeatable)
+      --timeout SECONDS   HTTP response timeout (default 10)
+      --connect-timeout N TCP connect timeout for port/TLS checks (default 3)
+      --delay SECONDS     Minimum gap between requests to one host (default 0.5)
+  -d, --depth N           Link-following depth from each root URL (default 1)
+      --max-urls N        Page budget per host (default 40)
+      --no-path-probes    Skip the well-known sensitive path checks
+      --reflection-probe  Send one marker parameter to test output encoding
+      --allow-private     Permit loopback and RFC1918 targets (staging, tests)
+      --fail-on LEVEL     Exit 1 at or above this severity (default high)
+      --no-color          Disable ANSI colour in text output
+  -v, --verbose           Progress on stderr
+  -h, --help              This message
+  -V, --version           Print the version
+
+Scope file: one host per line, # comments allowed.
+
+  example.com
+  www.example.com:8443
+  https://shop.example.com/
+  *.example.com            # the domain and any sub-domain
+
+Exit status: 0 nothing at or above --fail-on, 1 findings at or above it,
+2 usage or setup error.
+EOF
+
+	exit $status;
+}

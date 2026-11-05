@@ -1,0 +1,21 @@
+Revision history for App::WebPerimeterScan
+
+0.02  2026-11-05
+    - Add a source-aware pass.  --docroot resolves each finding's URL to the
+      real file under the document root, --source maps it to the route that
+      serves it, and a sensitive file present in a docroot is reported even
+      when the server did not serve it.
+    - Report the endpoints the source defines that the crawl never reached.
+
+0.01  2026-11-05
+    - First release.
+    - Scope file is the authorisation boundary; out-of-scope hosts are never
+      contacted, including hosts discovered by following links.
+    - Non-blocking TCP connect scan with a short banner read.
+    - TLS certificate, chain verification, protocol-version and cipher checks.
+    - Security header, cookie, CORS, HTTP method and mixed-content checks.
+    - Well-known sensitive path probes, filtered against a non-existent path
+      so applications that answer 200 for everything do not produce noise.
+    - PHP2Shell (CVE-2026-109618/109619) version check for disclosed PHP
+      versions.
+    - text, JSON and HTML reports; --fail-on controls the exit status.
