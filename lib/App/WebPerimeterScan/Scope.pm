@@ -5,6 +5,7 @@ use warnings;
 use autodie qw(:all);
 
 use Data::Validate::IP qw(is_ipv4 is_ipv6 is_public_ipv4 is_public_ipv6);
+use Encode qw(decode FB_CROAK LEAVE_SRC);
 use Params::Get qw(get_params);
 use Params::Validate::Strict qw(validate_strict);
 use Readonly;
@@ -27,6 +28,13 @@ Readonly::Scalar my $URL_LINE    => qr{\Ahttps?://}i;
 Readonly::Scalar my $WILDCARD    => qr/\A\*\.($HOST_RE)\z/;
 Readonly::Scalar my $HOST_PORT   => qr/\A($HOST_RE)(?::(\d+))?\z/;
 Readonly::Scalar my $COMMENT     => qr/\s*#.*/s;
+
+# Any character outside ASCII: such a host name needs its Punycode form.
+Readonly::Scalar my $NON_ASCII => qr/[^\x00-\x7f]/;
+
+# A bare scope line split into its parts, so that only the host is converted:
+# an optional "*." wildcard prefix, the host, and an optional ":port".
+Readonly::Scalar my $BARE_LINE => qr/\A(\*\.)?([^:\/\s]+)(:\d+)?\z/;
 
 # Valid TCP port numbers, for an explicit port in a scope line.
 Readonly::Scalar my $MIN_PORT => 1;
@@ -102,7 +110,8 @@ The scope file is plain text, one entry per line.  Each line is one of:
 
 Blank lines are ignored.  A C<#> starts a comment, which runs to the end of
 the line.  Host names are compared without regard to case, and a final dot
-(C<example.com.>) is removed.  A line that cannot be understood is skipped
+(C<example.com.>) is removed.  International names may be
+written as they are, in UTF-8; see L</ENCODING>.  A line that cannot be understood is skipped
 with a warning.  A file with no usable line at all is an error.
 
 =head1 REQUIREMENTS
@@ -426,6 +435,8 @@ sub covers
 {
 	my ($self, $host) = @_;
 
+	# A caller may pass an international name as text; entries are ASCII.
+	$host = _ascii_host($host);
 	return 0 unless defined $host && length $host;
 
 	$host = lc $host;
@@ -602,6 +613,21 @@ sub _add_entry :Private
 
 	my %entry;
 
+	# An international name is stored in its ASCII (Punycode) form, which is
+	# what DNS, URI and the crawler's links all use.  The line arrives as
+	# bytes from the file, so it is decoded first: URI given UTF-8 bytes
+	# reads each byte as a character and produces the Punycode of a
+	# different, wrong name.
+	if($line =~ $NON_ASCII) {
+		if($line =~ $URL_LINE) {
+			$line = _characters($line);
+		} else {
+			my ($wildcard, $host, $port) = $line =~ $BARE_LINE or return 0;
+			my $ascii = _ascii_host($host) // return 0;
+			$line = ($wildcard // '') . $ascii . ($port // '');
+		}
+	}
+
 	if($line =~ $URL_LINE) {
 		my $uri = URI->new($line);
 		my $host = eval { $uri->host };
@@ -633,6 +659,41 @@ sub _add_entry :Private
 	return 1;
 }
 
+# _characters
+# Purpose:     a string as Perl characters, whatever form it arrived in.
+# Entry:       $text is a character string, or bytes (normally UTF-8).
+# Exit:        the decoded text if $text is valid UTF-8 bytes; otherwise
+#              $text unchanged (it is already characters, or is in another
+#              encoding that cannot be guessed).
+# Side effects: none.
+sub _characters :Private
+{
+	my ($text) = @_;
+
+	# LEAVE_SRC: decode must not empty the caller's string.  FB_CROAK:
+	# invalid UTF-8 dies inside the eval and the text is kept as it is.
+	return utf8::is_utf8($text) ? $text : eval { decode('UTF-8', $text, FB_CROAK | LEAVE_SRC) } // $text;
+}
+
+# _ascii_host
+# Purpose:     the ASCII (Punycode) form of a host name, so names can be
+#              compared and looked up whichever way they were written.
+# Entry:       $host is undef, ASCII, UTF-8 bytes or a character string.
+# Exit:        the lower-case ASCII name; the name unchanged if it was
+#              already ASCII; undef if it cannot be converted.
+# Side effects: none.
+sub _ascii_host :Private
+{
+	my ($host) = @_;
+
+	return $host unless defined $host && $host =~ $NON_ASCII;
+
+	# URI applies the IDNA rules (lower case, then Punycode per label).
+	my $ascii = eval { URI->new('http://' . _characters($host) . '/')->host };
+
+	return (defined $ascii && length $ascii && $ascii !~ $NON_ASCII) ? lc $ascii : undef;
+}
+
 # _addresses
 # Purpose:     every numeric address a host resolves to, IPv4 and IPv6.
 # Entry:       $host is a hostname or address literal (brackets allowed).
@@ -642,6 +703,8 @@ sub _addresses :Private
 {
 	my ($host) = @_;
 
+	# getaddrinfo needs the ASCII form of an international name.
+	$host = _ascii_host($host);
 	return [] unless defined $host && length $host;
 	(my $name = $host) =~ s/\A\[(.*)\]\z/$1/;
 	(my $literal = $name) =~ s/%.*\z//;	# an IPv6 zone index such as %eth0
@@ -733,18 +796,26 @@ connection.  See L</LIMITATIONS>.
 
 =over 4
 
-=item * The scope file is read as bytes.  It may be saved as UTF-8; a
-byte-order mark is not supported.  Comments may contain any text.
+=item * B<Save the scope file as UTF-8.>  A byte-order mark at the start is
+not supported.  Comments may contain any text.
 
-=item * B<Host names must be written in ASCII.>  For an international
-name such as C<bE<uuml>cher.example>, write its ASCII (Punycode) form,
-C<xn--bcher-kva.example>, in the scope file.
+=item * B<International host names can be written as they are.>  A name
+such as C<bE<uuml>cher.example> is stored in its ASCII (Punycode) form,
+C<xn--bcher-kva.example>, which is the form DNS uses.  This works in all
+three kinds of line: C<bE<uuml>cher.example>, C<*.bE<uuml>cher.example> and
+C<https://bE<uuml>cher.example/>.  Writing the Punycode form yourself
+gives the same entry.
 
-A bare non-ASCII name is skipped as unparsable, with a warning.  A
-non-ASCII name inside a URL line (C<https://bE<uuml>cher.example/>) is
-worse: it is accepted without a warning, but because the file is read as
-bytes it is converted to the wrong ASCII name (C<xn--bcher-lka2c.example>),
-which matches no real host.  The scan of that line then fails to connect.
+C<entries> and C<hosts> return the Punycode form, so that is what the
+reports show.
+
+=item * B<A file that is not UTF-8> is read as Latin-1 (ISO 8859-1), one
+character per byte.  For Western European names this gives the right
+answer; for other encodings, save the file as UTF-8.
+
+=item * B<The checks accept any form of a name.>  C<covers>, C<allows>,
+C<is_private_target> and C<assert_target_allowed> accept a name in
+Punycode, as UTF-8 bytes or as a Perl character string, in any case.
 
 =item * The file name passed to C<load_file> is used as Perl bytes, as
 the operating system gives them.  A name with non-ASCII characters works

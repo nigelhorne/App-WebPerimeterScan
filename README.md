@@ -616,8 +616,9 @@ including one with emoji, appears correctly in all three report formats.
 - **Links with non-ASCII characters are followed correctly.**  A link
 written as raw UTF-8 and the same link written with `%` escapes are the
 same URL to the crawler.
-- **Host names in the scope file must be ASCII.**  Write an
-international domain name in its Punycode form.  See
+- **International host names work in the scope file.**  Save the file
+as UTF-8 and write the names as they are; they are scanned under their
+ASCII (Punycode) form, which is also the form shown in the reports.  See
 ["ENCODING" in App::WebPerimeterScan::Scope](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AScope#ENCODING).
 - **File and directory names are bytes.**  `docroots`,
 `source_dirs` and the paths in the findings are used exactly as the

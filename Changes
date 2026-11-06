@@ -45,6 +45,10 @@ Revision history for App-WebPerimeterScan
 	  treated as private, while multicast, TEST-NET, benchmarking and IPv6
 	  private ranges were not; every address a name resolves to is checked,
 	  not only the first
+	- International host names in the scope file are accepted as written in
+	  UTF-8 and scanned under their correct Punycode form; a bare name was
+	  refused, and a URL line was converted from raw bytes to the Punycode
+	  of a different name, which matched no real host
 	- Classify IP address literals without a DNS lookup, so ::1 and other
 	  private IPv6 literals are refused even where getaddrinfo cannot parse
 	  them (older Windows Perls)

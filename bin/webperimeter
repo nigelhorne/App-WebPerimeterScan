@@ -330,8 +330,9 @@ machine.>  A path that is not a directory is a usage error (exit 2).
 
 The reports are written as bytes, exactly as the scanner made them.  Text
 from web pages is UTF-8 when the site is, so the report is correct UTF-8
-for such sites; view it in a UTF-8 terminal.  The scope file must name hosts
-in ASCII; see L<App::WebPerimeterScan::Scope/ENCODING>.  Messages are in
+for such sites; view it in a UTF-8 terminal.  Save the scope file as UTF-8;
+international host names may be written as they are, and are reported in
+their ASCII (Punycode) form.  See L<App::WebPerimeterScan::Scope/ENCODING>.  Messages are in
 English; error messages from the operating system follow your locale.
 
 =head1 STATE DIAGRAM

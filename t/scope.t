@@ -119,6 +119,51 @@ subtest 'address literals do not depend on the resolver' => sub {
 	ok(!$scope->is_private_target('localhost'), 'a name now resolves to nothing, as on the failing platform');
 };
 
+subtest 'international (non-ASCII) host names' => sub {
+	# The file holds UTF-8 bytes, as an editor saves it.  A URL line used to
+	# be converted from those bytes to the wrong Punycode
+	# (xn--bcher-lka2c.example), and a bare name was refused.
+	my ($idn_fh, $idn_file) = tempfile(UNLINK => 1);
+	binmode $idn_fh;
+	print {$idn_fh} join "\n",
+		"b\xc3\xbccher.example",			# bucher, u with umlaut
+		"https://\xc3\xa9t\xc3\xa9.example:8443/",	# ete, e with acute
+		"*.m\xc3\xbcnchen.example",
+		"b\xc3\xbccher.example:99999",			# bad port: still refused
+		'';
+	close $idn_fh;
+
+	my @warnings;
+	local $SIG{__WARN__} = sub { push @warnings, @_ };
+	my $idn = App::WebPerimeterScan::Scope->new->load_file($idn_file);
+
+	is_deeply(
+		[ map { [ $_->{host}, $_->{port}, $_->{wildcard} ] } @{ $idn->entries } ],
+		[
+			[ 'xn--bcher-kva.example',  undef, undef ],
+			[ 'xn--t-9fab.example',     8443,  undef ],
+			[ 'xn--mnchen-3ya.example', undef, 1 ],
+		],
+		'bare, URL and wildcard lines get the correct Punycode name, port and wildcard kept',
+	);
+	is(scalar @warnings, 1, 'only the bad-port line is reported');
+	like($warnings[0] // '', qr/b\xc3\xbccher\.example:99999/, '... as it was written in the file');
+
+	ok($idn->covers('xn--bcher-kva.example'), 'covers the Punycode form');
+	ok($idn->covers("b\xc3\xbccher.example"), 'covers the name given as UTF-8 bytes');
+	ok($idn->covers("B\x{fc}CHER.Example"), 'covers the name given as characters, in any case');
+	ok($idn->covers('www.xn--mnchen-3ya.example'), 'the wildcard covers a sub-domain');
+	ok(!$idn->covers('xn--bcher-lka2c.example'), 'the old, wrong Punycode is not in scope');
+	ok(!$idn->covers("b\xc3\xbccher.example.evil"), 'a longer name is not covered');
+
+	# Name lookups use the ASCII form too.
+	my @looked_up;
+	no warnings 'redefine';
+	local *App::WebPerimeterScan::Scope::getaddrinfo = sub { push @looked_up, $_[0]; return ('not found') };
+	$idn->is_private_target("b\xc3\xbccher.example");
+	is_deeply(\@looked_up, [ 'xn--bcher-kva.example' ], 'the DNS lookup is for the Punycode name');
+};
+
 subtest 'allows' => sub {
 	my $wild = App::WebPerimeterScan::Scope->new;
 	my ($fh, $file) = tempfile(UNLINK => 1);

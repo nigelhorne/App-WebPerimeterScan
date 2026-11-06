@@ -6,6 +6,7 @@ requires 'Carp';
 requires 'Cwd';
 requires 'Data::Validate::IP', '0.31';
 requires 'Digest::MD5';
+requires 'Encode';
 requires 'Errno';
 requires 'Fcntl';
 requires 'Getopt::Long', '2.50';

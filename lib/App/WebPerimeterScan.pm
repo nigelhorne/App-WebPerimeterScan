@@ -1322,8 +1322,9 @@ including one with emoji, appears correctly in all three report formats.
 written as raw UTF-8 and the same link written with C<%> escapes are the
 same URL to the crawler.
 
-=item * B<Host names in the scope file must be ASCII.>  Write an
-international domain name in its Punycode form.  See
+=item * B<International host names work in the scope file.>  Save the file
+as UTF-8 and write the names as they are; they are scanned under their
+ASCII (Punycode) form, which is also the form shown in the reports.  See
 L<App::WebPerimeterScan::Scope/ENCODING>.
 
 =item * B<File and directory names are bytes.>  C<docroots>,

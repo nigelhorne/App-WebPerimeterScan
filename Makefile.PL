@@ -20,6 +20,7 @@ WriteMakefile(
 		'Cwd'                    => 0,
 		'Data::Validate::IP'     => 0.31,
 		'Digest::MD5'            => 0,
+		'Encode'                 => 0,
 		'Errno'                  => 0,
 		'Fcntl'                  => 0,
 		'Getopt::Long'           => 2.50,
