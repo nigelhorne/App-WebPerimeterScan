@@ -14,7 +14,7 @@ use App::WebPerimeterScan::Ports;
 use App::WebPerimeterScan::Source;
 use App::WebPerimeterScan::TLS;
 
-our $VERSION = '0.001.0';
+use version; our $VERSION = version->declare('0.001.0');
 
 # Crawling is for finding pages that share the site's header policy, not for
 # mirroring the site.  These are skipped so a scan does not waste requests on
@@ -547,6 +547,10 @@ __END__
 
 App::WebPerimeterScan - check your own web perimeter the way an outsider sees it
 
+=head1 VERSION
+
+Version 0.001.0
+
 =head1 SYNOPSIS
 
 	use App::WebPerimeterScan;
@@ -574,6 +578,48 @@ regenerate, rather than editing the README by hand.
 
 The scope file is the authorisation boundary: a host that does not appear in
 it is never contacted, including hosts discovered by following links.
+
+=head1 REQUIREMENTS
+
+Perl 5.10.0 or later, with the modules listed in F<Makefile.PL>.  The minimum
+Perl was measured with L<Perl::MinimumVersion> rather than guessed, and the
+suite is run against 5.10.1 as well as current perls.  C<cpan> installs
+anything that is missing, so these floors matter mainly on a machine that
+already has older copies of them:
+
+=over 4
+
+=item * C<Socket> 2.020
+
+The core of Perl 5.10.1 ships 2.018, so this is a real installation step on
+the minimum Perl.  The port scan reads C<SO_ERROR> from it to tell a refused
+connection from an open one.
+
+=item * C<Net::SSLeay> 1.92
+
+The first release with OpenSSL 3 support.  Earlier releases are not
+supported: 1.46 does not compile against OpenSSL 3 at all.
+
+=item * C<IO::Socket::SSL> 2.000
+
+=item * C<IO::Select> 1.17 and C<IO::Socket::INET> 1.31
+
+The versions that ship with Perl 5.10.1, so the minimum Perl needs no
+upgrade here.  They are stated because the port scan relies on how they
+behave, not only on what they provide.
+
+=back
+
+Both SSL modules need the OpenSSL headers at install time, which the
+installer cannot supply for you; install your distribution's C<openssl>
+development package first if the build fails.
+
+The remaining prerequisites are C<Getopt::Long> 2.50,
+C<HTML::SimpleLinkExtor> 1.20, C<JSON::PP> 4.00, C<Time::HiRes> 1.97,
+C<Time::Local> 1.28 and C<URI> 1.70, plus C<Test::More> 1.302 for the test
+suite.  Several of these are newer than the copies that ship with Perl 5.10,
+so on the minimum Perl let the installer upgrade them instead of pinning the
+core versions.
 
 =head1 USAGE
 

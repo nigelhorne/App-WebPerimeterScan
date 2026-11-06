@@ -202,6 +202,10 @@ __END__
 
 App::WebPerimeterScan::TLS - certificate and protocol inspection
 
+=head1 VERSION
+
+Version 0.001.0
+
 =head1 SYNOPSIS
 
 	my $tls = App::WebPerimeterScan::TLS->inspect(host => 'example.com', port => 443);
@@ -213,6 +217,14 @@ Performs four independent handshakes: one to read the certificate and the
 negotiated cipher, one with verification enabled to see whether a browser
 would trust the chain, and one per protocol version to see which of TLS 1.0,
 1.1, 1.2 and 1.3 the server still accepts.
+
+=head1 REQUIREMENTS
+
+Perl 5.10 or later, with C<IO::Socket::SSL> 2.000 and C<Net::SSLeay> 1.92,
+the first release with OpenSSL 3 support.  The expiry date is read through
+Net::SSLeay, so the build must provide C<X509_get_notAfter> and
+C<P_ASN1_TIME_put2string>; both are present from 1.88, but 1.46 does not
+compile against OpenSSL 3 at all.
 
 =head1 LICENSE
 

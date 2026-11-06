@@ -2,6 +2,10 @@
 
 App::WebPerimeterScan - check your own web perimeter the way an outsider sees it
 
+## Version
+
+Version 0.001.0
+
 ## Synopsis
 
 ```perl
@@ -31,6 +35,43 @@ regenerate, rather than editing the README by hand.
 
 The scope file is the authorisation boundary: a host that does not appear in
 it is never contacted, including hosts discovered by following links.
+
+## Requirements
+
+Perl 5.10.0 or later, with the modules listed in `Makefile.PL`.  The minimum
+Perl was measured with [Perl::MinimumVersion](https://metacpan.org/pod/Perl%3A%3AMinimumVersion) rather than guessed, and the
+suite is run against 5.10.1 as well as current perls.  `cpan` installs
+anything that is missing, so these floors matter mainly on a machine that
+already has older copies of them:
+
+- `Socket` 2.020
+
+    The core of Perl 5.10.1 ships 2.018, so this is a real installation step on
+    the minimum Perl.  The port scan reads `SO_ERROR` from it to tell a refused
+    connection from an open one.
+
+- `Net::SSLeay` 1.92
+
+    The first release with OpenSSL 3 support.  Earlier releases are not
+    supported: 1.46 does not compile against OpenSSL 3 at all.
+
+- `IO::Socket::SSL` 2.000
+- `IO::Select` 1.17 and `IO::Socket::INET` 1.31
+
+    The versions that ship with Perl 5.10.1, so the minimum Perl needs no
+    upgrade here.  They are stated because the port scan relies on how they
+    behave, not only on what they provide.
+
+Both SSL modules need the OpenSSL headers at install time, which the
+installer cannot supply for you; install your distribution's `openssl`
+development package first if the build fails.
+
+The remaining prerequisites are `Getopt::Long` 2.50,
+`HTML::SimpleLinkExtor` 1.20, `JSON::PP` 4.00, `Time::HiRes` 1.97,
+`Time::Local` 1.28 and `URI` 1.70, plus `Test::More` 1.302 for the test
+suite.  Several of these are newer than the copies that ship with Perl 5.10,
+so on the minimum Perl let the installer upgrade them instead of pinning the
+core versions.
 
 ## Usage
 

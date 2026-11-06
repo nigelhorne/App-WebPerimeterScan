@@ -25,6 +25,9 @@ Revision history for App-WebPerimeterScan
 	- Declare MIN_PERL_VERSION 5.010, the floor the syntax actually needs
 	  (the defined-or operator is used throughout); every prerequisite
 	  supports it
+	- Require Net::SSLeay 1.92, which compiles against OpenSSL 3 where 1.46
+	  cannot, and lower the IO::Select and IO::Socket::INET floors to 1.17
+	  and 1.31, the versions the suite is actually tested against
 
 	[ Bug Fixes ]
 	- Confirm the connection in the serial port scan instead of trusting

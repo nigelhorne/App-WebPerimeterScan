@@ -75,6 +75,56 @@ ok($unresolvable->{error}, 'unresolvable host reports an error');
 	);
 }
 
+# On macOS IO::Socket::INET returns a socket whose connect is still in
+# progress, and the serial path then reported the port as open.  Reproduce
+# that state anywhere: start a non-blocking connect to a port that refuses, so
+# the socket is writable while SO_ERROR holds the failure, and hand it to the
+# scan in place of a fresh connection.  Without the SO_ERROR check the socket
+# looks open and this fails.
+SKIP: {
+	skip 'needs fcntl(F_SETFL) to build a half-open connect', 1
+		unless $App::WebPerimeterScan::Ports::NONBLOCKING;
+
+	require Fcntl;
+	require Socket;
+
+	my $pending;
+	socket($pending, Socket::AF_INET(), Socket::SOCK_STREAM(), getprotobyname('tcp'))
+		or skip 'cannot create a socket', 1;
+
+	my $flags = fcntl($pending, Fcntl::F_GETFL(), 0);
+	fcntl($pending, Fcntl::F_SETFL(), $flags | Fcntl::O_NONBLOCK());
+
+	connect($pending, Socket::sockaddr_in($closed_port, Socket::inet_aton('127.0.0.1')));
+
+	{
+		no warnings 'redefine';
+
+		my $real_new = \&IO::Socket::INET::new;
+		local *IO::Socket::INET::new = sub {
+			my ($class, %args) = @_;
+
+			return $pending if($args{PeerPort} // 0) == $closed_port;
+
+			return $real_new->(@_);
+		};
+
+		local $App::WebPerimeterScan::Ports::NONBLOCKING = 0;
+		my $scan = App::WebPerimeterScan::Ports->scan(
+			host    => '127.0.0.1',
+			ports   => [ $closed_port ],
+			timeout => 2,
+			banner  => 0,
+		);
+
+		is_deeply(
+			[ map { $_->{port} } @{ $scan->{open} } ],
+			[],
+			'a connect that failed is not reported open by the serial path',
+		);
+	}
+}
+
 close $listener;
 close $closed_socket;
 

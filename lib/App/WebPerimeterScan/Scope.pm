@@ -180,6 +180,10 @@ __END__
 
 App::WebPerimeterScan::Scope - authorisation boundary for an external scan
 
+=head1 VERSION
+
+Version 0.001.0
+
 =head1 SYNOPSIS
 
 	my $scope = App::WebPerimeterScan::Scope->new(allow_private => 0);
@@ -191,6 +195,12 @@ App::WebPerimeterScan::Scope - authorisation boundary for an external scan
 
 Every network request the scanner makes is checked against this object.
 Hosts that are not listed in the scope file are never contacted.
+
+=head1 REQUIREMENTS
+
+Perl 5.10 or later, with C<URI> 1.70, which is not part of Perl 5.10's core
+and so is installed for you.  Addresses are resolved with C<Socket>, which is
+core.
 
 =head1 LICENSE
 

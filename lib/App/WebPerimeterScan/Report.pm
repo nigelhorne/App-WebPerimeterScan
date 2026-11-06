@@ -252,10 +252,32 @@ __END__
 
 App::WebPerimeterScan::Report - text, JSON and HTML output
 
+=head1 VERSION
+
+Version 0.001.0
+
 =head1 SYNOPSIS
 
 	print App::WebPerimeterScan::Report::as_text($findings,
 		version => '0.01', generated => '2026-11-05T10:00:00Z', hosts => \@hosts);
+
+=head1 DESCRIPTION
+
+Each function takes the findings collector plus the scan metadata the runner
+gathered - C<version>, C<generated>, C<scope_source>, C<requests> and the
+per-host C<hosts> list - and renders it.  C<as_text> colours severity names
+with C<Term::ANSIColor> when standard output is a terminal or C<< color => 1
+>> is passed; C<as_json> emits canonical, pretty-printed JSON including a
+summary count; C<as_html> escapes every value it interpolates, so a host name
+or header value cannot inject markup into the report.
+
+Ordering and de-duplication belong to the findings collector, so the three
+formats always agree on what is reported and in what order.
+
+=head1 REQUIREMENTS
+
+Perl 5.10 or later.  The JSON report is written with C<JSON::PP> 4.00, which
+is newer than the copy in Perl 5.10's core, so the installer upgrades it.
 
 =head1 LICENSE
 

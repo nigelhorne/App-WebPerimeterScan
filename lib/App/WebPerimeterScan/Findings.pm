@@ -117,6 +117,33 @@ __END__
 
 App::WebPerimeterScan::Findings - collect and order scan results
 
+=head1 VERSION
+
+Version 0.001.0
+
+=head1 SYNOPSIS
+
+	use App::WebPerimeterScan::Findings;
+
+	my $findings = App::WebPerimeterScan::Findings->new;
+
+	$findings->add(
+		id       => 'csp-missing',
+		severity => 'medium',
+		host     => 'example.com',
+		url      => 'https://example.com/',
+		title    => 'Content-Security-Policy is missing',
+	);
+
+	printf "%d finding(s), %d medium\n",
+		$findings->count, $findings->counts->{medium};
+
+	for my $finding ($findings->sorted) {
+		print $finding->{severity}, ' ', $finding->{title}, "\n";
+	}
+
+	exit 1 if $findings->at_or_above('high');
+
 =head1 DESCRIPTION
 
 Findings are de-duplicated on (id, host, url, key) and sorted worst first so

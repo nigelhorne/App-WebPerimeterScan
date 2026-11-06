@@ -369,6 +369,10 @@ __END__
 
 App::WebPerimeterScan::HTTP - minimal HTTP/1.1 client for perimeter scanning
 
+=head1 VERSION
+
+Version 0.001.0
+
 =head1 SYNOPSIS
 
 	my $http = App::WebPerimeterScan::HTTP->new(delay => 0.5);
@@ -385,6 +389,12 @@ does not look like a denial of service.
 TLS certificates are not verified at this layer so that a site with an
 expired or mismatched certificate can still be inspected; the verification
 result is reported separately by L<App::WebPerimeterScan::TLS>.
+
+=head1 REQUIREMENTS
+
+Perl 5.10 or later, with C<IO::Socket::INET> 1.31 and C<IO::Select> 1.17.
+HTTPS requests also need C<IO::Socket::SSL> 2.000, whose installation needs
+the OpenSSL headers.
 
 =head1 LICENSE
 

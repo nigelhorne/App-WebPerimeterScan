@@ -93,6 +93,19 @@ sub scan
 	};
 }
 
+# SO_ERROR holds the result of a connect: 0 means the handshake completed.
+# connect() returning true only means it started, which is how a refused port
+# was once reported as open on macOS, so both connect paths ask here.
+sub _handshake_ok
+{
+	my ($sock) = @_;
+
+	my $error = getsockopt($sock, SOL_SOCKET, SO_ERROR);
+	my $errno = defined $error ? unpack('i', $error) : 1;
+
+	return $errno == 0 ? 1 : 0;
+}
+
 # One non-blocking batch, resolved through a single select.
 sub _connect_parallel
 {
@@ -137,13 +150,10 @@ sub _connect_parallel
 			my $fd = fileno $sock;
 			my $entry = $by_fd{$fd} or next;
 
-			my $error = getsockopt($sock, SOL_SOCKET, SO_ERROR);
-			my $errno = defined $error ? unpack('i', $error) : 1;
-
 			$select->remove($sock);
 			delete $by_fd{$fd};
 
-			if($errno == 0) {
+			if(_handshake_ok($sock)) {
 				push @open, { port => $entry->{port}, banner => '' };
 				close $sock;
 			} else {
@@ -179,15 +189,11 @@ sub _connect_serial
 		) or next;
 
 		# IO::Socket::INET can hand back a socket whose connect is still in
-		# progress, so a refused port looked open on macOS.  Wait for the
-		# socket to become writable and read the result of the handshake.
+		# progress, so a refused port looks open; wait for it to become
+		# writable before asking how the handshake ended.
 		my $select = IO::Select->new($sock);
-		if(my $writable = $select->can_write($timeout)) {
-			my $error = getsockopt($sock, SOL_SOCKET, SO_ERROR);
-			my $errno = defined $error ? unpack('i', $error) : 1;
-			if($errno == 0) {
-				push @open, { port => $port + 0, banner => '' };
-			}
+		if($select->can_write($timeout) && _handshake_ok($sock)) {
+			push @open, { port => $port + 0, banner => '' };
 		}
 		close $sock;
 	}
@@ -235,6 +241,10 @@ __END__
 
 App::WebPerimeterScan::Ports - parallel TCP connect scan
 
+=head1 VERSION
+
+Version 0.001.0
+
 =head1 SYNOPSIS
 
 	my $scan = App::WebPerimeterScan::Ports->scan(host => 'example.com');
@@ -249,6 +259,17 @@ so a full pass over the default port list costs one timeout rather than one
 timeout per port.  A short banner read follows, because an SSH or SMTP
 greeting is often the difference between "a port is open" and "this is a
 seven-year-old OpenSSH".
+
+=head1 REQUIREMENTS
+
+Perl 5.10 or later, with C<Socket> 2.020: the core of 5.10.1 ships 2.018, and
+C<SO_ERROR> is what separates a refused connection from an open one.
+C<IO::Select> 1.17 and C<IO::Socket::INET> 1.31 are the versions this is
+tested against.
+
+The parallel path needs a working C<fcntl(F_SETFL)> and C<O_NONBLOCK>.  Where
+they are missing, as on Windows, the scan connects one port at a time
+instead.
 
 =head1 LICENSE
 

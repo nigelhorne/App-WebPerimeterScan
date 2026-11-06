@@ -908,6 +908,24 @@ __END__
 
 App::WebPerimeterScan::Checks - the rule set
 
+=head1 VERSION
+
+Version 0.001.0
+
+=head1 SYNOPSIS
+
+	use App::WebPerimeterScan::Findings;
+	use App::WebPerimeterScan::Checks;
+
+	my $findings = App::WebPerimeterScan::Findings->new;
+
+	App::WebPerimeterScan::Checks::check_page($findings,
+		host => 'example.com', url => 'https://example.com/', res => $res);
+	App::WebPerimeterScan::Checks::check_tls($findings,
+		host => 'example.com', tls => $tls);
+
+	print $_->{severity}, ' ', $_->{title}, "\n" for $findings->sorted;
+
 =head1 DESCRIPTION
 
 Each C<check_*> function takes the findings collector plus the data it needs

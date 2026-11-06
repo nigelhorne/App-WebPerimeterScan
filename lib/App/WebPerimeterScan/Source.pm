@@ -233,6 +233,10 @@ __END__
 
 App::WebPerimeterScan::Source - map scan results onto files and code
 
+=head1 VERSION
+
+Version 0.001.0
+
 =head1 SYNOPSIS
 
 	my $source = App::WebPerimeterScan::Source->new(
