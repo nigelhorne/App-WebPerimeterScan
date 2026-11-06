@@ -43,7 +43,7 @@ jobs:
         # floor is a property of the language, not the platform.
         include:
           - os: ubuntu-latest
-            perl: "5.14"
+            perl: "5.26"
     name: Perl ${{ matrix.perl }} on ${{ matrix.os }}
     env:
       AUTOMATED_TESTING: 1

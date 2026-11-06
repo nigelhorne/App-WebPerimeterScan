@@ -12,11 +12,11 @@ if($^O eq 'darwin') {
 WriteMakefile(
 	NAME          => 'App::WebPerimeterScan',
 	VERSION_FROM  => 'lib/App/WebPerimeterScan.pm',
-	MIN_PERL_VERSION => '5.014',
+	MIN_PERL_VERSION => '5.026',
 	LICENSE       => 'gpl_2',
 	EXE_FILES     => ['bin/webperimeter'],
 	CONFIGURE_REQUIRES => {
-		# TEST_REQUIRES is ignored before 6.64, and Perl 5.14 ships 6.57.
+		# TEST_REQUIRES is ignored before 6.64; every supported Perl ships a newer one.
 		'ExtUtils::MakeMaker' => 6.64,
 	}, PREREQ_PM    => {
 		'Carp'                   => 0,

@@ -108,9 +108,9 @@ touching the code; see [App::WebPerimeterScan::I18N](https://metacpan.org/pod/Ap
 
 ## Requirements
 
-Perl 5.14.0 or later, with the modules listed in `Makefile.PL`.  The floor
-is set by [Sub::Private](https://metacpan.org/pod/Sub%3A%3APrivate), which needs `${^GLOBAL_PHASE}`; everything else
-would run on 5.10.  `cpan` installs anything that is missing, so these
+Perl 5.26.0 or later, with the modules listed in `Makefile.PL`.  The floor
+is set by [Params::Validate::Strict](https://metacpan.org/pod/Params%3A%3AValidate%3A%3AStrict), which needs 5.26; the code in this
+distribution would run on 5.14.  `cpan` installs anything that is missing, so these
 floors matter mainly on a machine that already has older copies of them:
 
 - `Socket` 2.020
@@ -708,8 +708,8 @@ and the docroot belongs to a different one.  Scan one site at a time when
 you give `--docroot`.
 - **Only English is catalogued.**  The message layer is ready for
 other languages (see [App::WebPerimeterScan::I18N](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AI18N)), but none ships.
-- **Perl 5.14 is required** because [Sub::Private](https://metacpan.org/pod/Sub%3A%3APrivate) needs it.  Before
-the access controls were added the code ran on 5.10.
+- **Perl 5.26 is required** because [Params::Validate::Strict](https://metacpan.org/pod/Params%3A%3AValidate%3A%3AStrict) needs it.
+The code in this distribution would run on 5.14.
 
 ## Formal Specification
 

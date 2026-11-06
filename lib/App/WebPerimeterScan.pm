@@ -193,9 +193,9 @@ touching the code; see L<App::WebPerimeterScan::I18N>.
 
 =head1 REQUIREMENTS
 
-Perl 5.14.0 or later, with the modules listed in F<Makefile.PL>.  The floor
-is set by L<Sub::Private>, which needs C<${^GLOBAL_PHASE}>; everything else
-would run on 5.10.  C<cpan> installs anything that is missing, so these
+Perl 5.26.0 or later, with the modules listed in F<Makefile.PL>.  The floor
+is set by L<Params::Validate::Strict>, which needs 5.26; the code in this
+distribution would run on 5.14.  C<cpan> installs anything that is missing, so these
 floors matter mainly on a machine that already has older copies of them:
 
 =over 4
@@ -1426,8 +1426,8 @@ you give C<--docroot>.
 =item * B<Only English is catalogued.>  The message layer is ready for
 other languages (see L<App::WebPerimeterScan::I18N>), but none ships.
 
-=item * B<Perl 5.14 is required> because L<Sub::Private> needs it.  Before
-the access controls were added the code ran on 5.10.
+=item * B<Perl 5.26 is required> because L<Params::Validate::Strict> needs it.
+The code in this distribution would run on 5.14.
 
 =back
 
