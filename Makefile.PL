@@ -56,10 +56,11 @@ WriteMakefile(
 		'version'                => 0.77,	# version->declare
 	}, TEST_REQUIRES => {
 		'File::Temp' => 0,
+		'Test::DescribeMe' => 0,
 		'Test::Fatal' => 0,
-		'Test::More' => 1.302,
+		'Test::Most' => 0,
 	},
-	ABSTRACT      => 'Check the parts of your own web perimeter that an outsider can reach',
+	ABSTRACT_FROM	=> 'lib/App/WebPerimeterScan.pm',
 	AUTHOR        => 'Nigel Horne <njh@nigelhorne.com>',
 	dist => $dist,
 	clean	=> { FILES => 'App-WebPerimeterScan-*' },

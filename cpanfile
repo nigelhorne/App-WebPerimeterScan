@@ -21,6 +21,7 @@ requires 'IO::Socket::SSL', '2.000';
 requires 'IPC::System::Simple', '1.30';   # autodie :all needs it for system()
 requires 'JSON::PP', '4.00';
 requires 'Net::SSLeay', '1.92';
+requires 'Object::Configure', '0.24';
 requires 'POSIX';
 requires 'Params::Get', '0.17';
 requires 'Params::Validate::Strict', '0.41';
@@ -43,8 +44,9 @@ on 'configure' => sub {
 
 on 'test' => sub {
 	requires 'File::Temp';
+	requires 'Test::DescribeMe';
 	requires 'Test::Fatal';
-	requires 'Test::More', '1.302';
+	requires 'Test::Most';
 };
 
 on 'develop' => sub {
