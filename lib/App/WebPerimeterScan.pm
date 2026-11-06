@@ -14,7 +14,7 @@ use App::WebPerimeterScan::Ports;
 use App::WebPerimeterScan::Source;
 use App::WebPerimeterScan::TLS;
 
-our $VERSION = '0.03';
+our $VERSION = '0.001.0';
 
 # Crawling is for finding pages that share the site's header policy, not for
 # mirroring the site.  These are skipped so a scan does not waste requests on
@@ -595,7 +595,7 @@ file is still the boundary.
 	$ bin/webperimeter --scope scope.txt --authorized --ports 80,443 \
 	    --max-urls 1 --no-path-probes --no-color
 
-	webperimeter 0.03  2026-11-06T01:02:39Z
+	webperimeter 0.001.0  2026-11-06T01:05:02Z
 	Scope: scope.txt
 	Requests: 4
 
@@ -634,9 +634,9 @@ middle for length.
 
 	$ printf 'localhost:3000\n' > scope.txt
 	$ bin/webperimeter --scope scope.txt --authorized --allow-private --ports 3000 \
-	    --source ~/src/Database-BI --no-path-probes --max-urls 6 --delay 0.2 --no-color
+	    --source ~/src/njh/Database-BI --no-path-probes --max-urls 6 --delay 0.2 --no-color
 
-	webperimeter 0.03  2026-11-05T21:42:53Z
+	webperimeter 0.001.0  2026-11-06T01:05:47Z
 	Scope: scope.txt
 	Requests: 8
 
@@ -659,7 +659,7 @@ middle for length.
 	INFO (1)
 	--------
 	[source-routes-unvisited] 71 endpoint(s) defined in source were not scanned
-	  Evidence: ~/src/Database-BI/lib/Database/BI.pm:2710 GET /login; ~/src/Database-BI/lib/Database/BI.pm:2711 POST /login; ~/src/Database-BI/lib/Database/BI.pm:2712 POST /logout; [...]
+	  Evidence: ~/src/njh/Database-BI/lib/Database/BI.pm:2713 GET /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2714 POST /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2715 POST /logout; [...]
 	  Fix: Name them explicitly, raise --max-urls, or review them by hand.
 
 	Summary: 0 critical, 0 high, 0 medium, 2 low, 1 info

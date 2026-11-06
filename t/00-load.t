@@ -21,4 +21,12 @@ for my $module (@modules) {
 	use_ok($module) or BAIL_OUT("Cannot load $module");
 }
 
+# Every module ships in the same distribution, so one release has one
+# version; mixed versions make it impossible to tell which code produced a
+# report.
+my $version = $App::WebPerimeterScan::VERSION;
+for my $module (@modules) {
+	is($module->VERSION, $version, "$module is at $version");
+}
+
 done_testing();

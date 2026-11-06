@@ -7,7 +7,7 @@ use Cwd qw(realpath);
 use File::Find qw(find);
 use File::Spec;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # Route declarations this understands.  Mojolicious is the common Perl web
 # framework, so its $r->get('/path') form is what the indexer reads; a route

@@ -7,7 +7,7 @@ use Socket qw(inet_aton);
 
 use URI;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # The scope file is the authorisation boundary.  Nothing in this distribution
 # will send traffic to a host that does not appear here, so a crawler cannot

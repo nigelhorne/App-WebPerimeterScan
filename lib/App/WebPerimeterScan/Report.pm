@@ -7,7 +7,7 @@ use JSON::PP ();
 
 use App::WebPerimeterScan::Findings ();
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 my %COLOR = (
 	critical => 'bold red',

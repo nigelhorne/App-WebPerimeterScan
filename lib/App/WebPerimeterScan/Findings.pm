@@ -3,7 +3,7 @@ package App::WebPerimeterScan::Findings;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 our @SEVERITIES = qw(critical high medium low info);
 

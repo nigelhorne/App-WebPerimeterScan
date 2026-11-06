@@ -10,7 +10,7 @@ use IO::Socket::INET ();
 use Socket qw(AF_INET SOCK_STREAM SOL_SOCKET SO_ERROR inet_aton sockaddr_in);
 use Time::HiRes qw(time);
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # F_GETFL and friends are not defined on Windows, where Fcntl dies with "Your
 # vendor has not defined Fcntl macro" as soon as the constant is reached.  The
@@ -178,7 +178,17 @@ sub _connect_serial
 			Timeout  => $timeout,
 		) or next;
 
-		push @open, { port => $port + 0, banner => '' };
+		# IO::Socket::INET can hand back a socket whose connect is still in
+		# progress, so a refused port looked open on macOS.  Wait for the
+		# socket to become writable and read the result of the handshake.
+		my $select = IO::Select->new($sock);
+		if(my $writable = $select->can_write($timeout)) {
+			my $error = getsockopt($sock, SOL_SOCKET, SO_ERROR);
+			my $errno = defined $error ? unpack('i', $error) : 1;
+			if($errno == 0) {
+				push @open, { port => $port + 0, banner => '' };
+			}
+		}
 		close $sock;
 	}
 

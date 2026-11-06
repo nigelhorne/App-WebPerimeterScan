@@ -3,6 +3,7 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
 	NAME          => 'App::WebPerimeterScan',
 	VERSION_FROM  => 'lib/App/WebPerimeterScan.pm',
+	MIN_PERL_VERSION => '5.010',
 	LICENSE       => 'gpl_2',
 	EXE_FILES     => ['bin/webperimeter'],
 	PREREQ_PM     => {

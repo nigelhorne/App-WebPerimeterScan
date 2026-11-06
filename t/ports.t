@@ -20,24 +20,18 @@ plan skip_all => 'cannot bind a loopback listener' unless $listener;
 
 my $open_port = $listener->sockport;
 
-# Reserve a port, then release it, so we have an address nothing listens on.
-my $closed_port;
-for (1 .. 10) {
-	my $temp = IO::Socket::INET->new(
-		LocalAddr => '127.0.0.1',
-		LocalPort => 0,
-		Listen    => 5,
-		ReuseAddr => 1,
-		Proto     => 'tcp',
-	) or next;
+# Bind a port without listening on it: nothing answers there, and because the
+# port stays bound the kernel cannot hand it out as the local port of the
+# scan's own connection.  Releasing it instead let macOS reuse it that way, so
+# the scan connected to itself and the port looked open.
+my $closed_socket = IO::Socket::INET->new(
+	LocalAddr => '127.0.0.1',
+	LocalPort => 0,
+	Proto     => 'tcp',
+);
+plan skip_all => 'could not bind a closed port' unless $closed_socket;
 
-	my $candidate = $temp->sockport;
-	close $temp;
-	next if $candidate == $open_port;
-	$closed_port = $candidate;
-	last;
-}
-plan skip_all => 'could not reserve a closed port' unless defined $closed_port;
+my $closed_port = $closed_socket->sockport;
 
 my $scan = App::WebPerimeterScan::Ports->scan(
 	host    => '127.0.0.1',
@@ -82,6 +76,7 @@ ok($unresolvable->{error}, 'unresolvable host reports an error');
 }
 
 close $listener;
+close $closed_socket;
 
 ok(scalar @App::WebPerimeterScan::Ports::DEFAULT_PORTS > 0,
 	'default port list is populated');

@@ -8,7 +8,7 @@ use Net::SSLeay ();
 use Time::HiRes qw(time);
 use Time::Local qw(timegm);
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 my %MONTH = (
 	Jan => 0, Feb => 1, Mar => 2,  Apr => 3,  May => 4,  Jun => 5,

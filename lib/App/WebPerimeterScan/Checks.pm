@@ -7,7 +7,7 @@ use Digest::MD5 qw(md5_hex);
 
 use App::WebPerimeterScan::Ports ();
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 # A reserved TLD (RFC 2606) so the CORS probe can never be mistaken for a
 # real origin, and can never resolve to anything.

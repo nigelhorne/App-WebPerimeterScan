@@ -13,6 +13,7 @@ lib/App/WebPerimeterScan/TLS.pm
 LICENSE
 Makefile.PL
 MANIFEST
+MANIFEST.SKIP
 README.md
 t/00-load.t
 t/checks.t

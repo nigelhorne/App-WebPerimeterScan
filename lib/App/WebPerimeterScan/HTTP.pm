@@ -10,7 +10,7 @@ use Time::HiRes qw(time sleep);
 
 use URI;
 
-our $VERSION = '0.01';
+our $VERSION = '0.001.0';
 
 my %DEFAULT_HEADERS = (
 	'Accept'          => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',

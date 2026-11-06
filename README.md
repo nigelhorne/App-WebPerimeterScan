@@ -55,14 +55,14 @@ file is still the boundary.
     $ bin/webperimeter --scope scope.txt --authorized --ports 80,443 \
         --max-urls 1 --no-path-probes --no-color
 
-    webperimeter 0.03  2026-11-05T23:30:12Z
+    webperimeter 0.001.0  2026-11-06T01:05:02Z
     Scope: scope.txt
     Requests: 4
 
     ============================================================
     example.com
     ------------------------------------------------------------
-      TLS: TLSv1_3, TLS_AES_256_GCM_SHA384, expires unknown
+      TLS: TLSv1_3, TLS_AES_256_GCM_SHA384, expires Dec 25 22:56:35 2026 GMT (49 days)
       Certificate: /CN=example.com issued by /C=US/O=SSL Corporation/CN=Cloudflare TLS Issuing ECC CA 3
       Open ports: 80, 443
       URLs scanned: 1
@@ -87,10 +87,6 @@ because it is not hardened: a run reporting missing CSP, HSTS and nosniff
 shows the checks are wired up, and a run that reports nothing - or a critical
 finding - means the scan is broken, not the site.
 
-`expires unknown` in the header means the expiry could not be read from the
-certificate by the installed IO::Socket::SSL; the check is skipped rather than
-guessed.
-
 ## Example
 
 A real run against a local application, with its source tree supplied so the
@@ -100,9 +96,9 @@ middle for length.
 ```
     $ printf 'localhost:3000\n' > scope.txt
     $ bin/webperimeter --scope scope.txt --authorized --allow-private --ports 3000 \
-        --source ~/src/Database-BI --no-path-probes --max-urls 6 --delay 0.2 --no-color
+        --source ~/src/njh/Database-BI --no-path-probes --max-urls 6 --delay 0.2 --no-color
 
-    webperimeter 0.03  2026-11-05T21:42:53Z
+    webperimeter 0.001.0  2026-11-06T01:05:47Z
     Scope: scope.txt
     Requests: 8
 
@@ -125,7 +121,7 @@ middle for length.
     INFO (1)
     --------
     [source-routes-unvisited] 71 endpoint(s) defined in source were not scanned
-      Evidence: ~/src/Database-BI/lib/Database/BI.pm:2710 GET /login; ~/src/Database-BI/lib/Database/BI.pm:2711 POST /login; ~/src/Database-BI/lib/Database/BI.pm:2712 POST /logout; [...]
+      Evidence: ~/src/njh/Database-BI/lib/Database/BI.pm:2713 GET /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2714 POST /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2715 POST /logout; [...]
       Fix: Name them explicitly, raise --max-urls, or review them by hand.
 
     Summary: 0 critical, 0 high, 0 medium, 2 low, 1 info
