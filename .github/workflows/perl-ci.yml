@@ -38,6 +38,12 @@ jobs:
         exclude:
           - os: windows-latest
             perl: "5.40"
+        # The declared minimum (MIN_PERL_VERSION in Makefile.PL), so that a
+        # newer construct cannot slip in unnoticed.  One OS is enough: the
+        # floor is a property of the language, not the platform.
+        include:
+          - os: ubuntu-latest
+            perl: "5.14"
     name: Perl ${{ matrix.perl }} on ${{ matrix.os }}
     env:
       AUTOMATED_TESTING: 1

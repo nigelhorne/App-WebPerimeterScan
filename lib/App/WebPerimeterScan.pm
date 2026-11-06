@@ -87,8 +87,6 @@ Readonly::Hash my %RULE => (
 	'source-routes-unvisited' => { severity => 'info' },
 );
 
-=encoding utf8
-
 =head1 NAME
 
 App::WebPerimeterScan - check your own web perimeter the way an outsider sees it
@@ -1257,9 +1255,37 @@ sub _random_token :Private
 	return join '', map { $TOKEN_CHARS[ int rand @TOKEN_CHARS ] } 1 .. $config{token_length};
 }
 
-1;
+=head1 RULES
 
-__END__
+These rules come from the scan itself.  The page, TLS, port and path rules
+are listed in L<App::WebPerimeterScan::Checks/RULES>.
+
+	Rule id                   Severity  Reported when
+	------------------------  --------  ---------------------------------------
+	scan-error                high      a host was refused (not listed, or
+	                                    private without allow_private), or its
+	                                    scan failed part way
+	host-unreachable          high      neither https:// nor http:// answered
+	                                    at the root of the host
+	no-https-redirect         medium    the site is served over HTTPS, but
+	                                    http:// does not answer with a 301,
+	                                    302, 303, 307 or 308 to https://
+	                                    (checked only when the scope line names
+	                                    no port; port 80 closed is fine)
+	catch-all-200             info      with path probes on: a random path
+	                                    that cannot exist
+	                                    answers 200, so the server answers
+	                                    every path alike
+	reflected-input           medium    with reflection on: the marker sent
+	                                    in the query came back unescaped
+	source-file-in-docroot    medium    with docroots: a file that a critical
+	                                    path probe looks for is on disk
+	                          low       ... a file that a high path probe
+	                                    looks for is on disk
+	                                    (files for medium and low probes are
+	                                    not looked for on disk)
+	source-routes-unvisited   info      with source_dirs: routes in the code
+	                                    that the crawl never reached
 
 =head1 COMMON PITFALLS
 
@@ -1387,6 +1413,13 @@ at all.
 =item * B<Path probes are a fixed list.>  Eighteen well-known files are
 requested; a secret under any other name is only found by C<--docroot>.
 
+=item * B<The docroot check is not tied to a host.>  A document root is a
+directory on this machine, and nothing says which host in the scope serves
+it.  So a sensitive file that any host already served over the network is
+not reported again from the disk, even when the scope holds several sites
+and the docroot belongs to a different one.  Scan one site at a time when
+you give C<--docroot>.
+
 =item * B<Only English is catalogued.>  The message layer is ready for
 other languages (see L<App::WebPerimeterScan::I18N>), but none ships.
 
@@ -1394,6 +1427,8 @@ other languages (see L<App::WebPerimeterScan::I18N>), but none ships.
 the access controls were added the code ran on 5.10.
 
 =back
+
+=encoding utf8
 
 =head1 FORMAL SPECIFICATION
 
@@ -1581,11 +1616,18 @@ becomes a C<scan-error> finding for that host:
 	        v
 	    next host
 
-=head1 LICENSE AND COPYRIGHT
+=head1 AUTHOR
 
-Copyright (C) 2026 Nigel Horne.
+Nigel Horne, C<< <njh at nigelhorne.com> >>
 
-This program is free software, released under the GNU General Public
-License, version 2 (GPL2).  See the F<LICENSE> file.
+=head1 LICENCE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+Usage is subject to the GPL2 licence terms.
+If you use it,
+please let me know.
 
 =cut
+
+1;

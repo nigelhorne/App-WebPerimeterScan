@@ -689,11 +689,16 @@ The protected helpers add one step after that:
 	  _throw(key, args)  -> i18n(key, args) -> croak   (the caller dies)
 	  _warn(key, args)   -> i18n(key, args) -> carp    (returns the object)
 
-=head1 LICENSE AND COPYRIGHT
+=head1 AUTHOR
 
-Copyright (C) 2026 Nigel Horne.
+Nigel Horne, C<< <njh at nigelhorne.com> >>
 
-This program is free software, released under the GNU General Public
-License, version 2 (GPL2).  See the F<LICENSE> file.
+=head1 LICENCE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+Usage is subject to the GPL2 licence terms.
+If you use it,
+please let me know.
 
 =cut

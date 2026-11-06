@@ -48,7 +48,9 @@ sub write_file {
 	return $path;
 }
 
-my $scope = write_file('scope.txt', "# a comment\nexample.com\n");
+# An address literal, so that the dry run, which checks whether each host
+# is private, never needs DNS.  203.0.113.0/24 is reserved for documentation.
+my $scope = write_file('scope.txt', "# a comment\n203.0.113.10\n");
 
 subtest 'information' => sub {
 	my $r = run_cli('--version');
@@ -94,7 +96,7 @@ subtest 'nothing is sent without authorisation or a valid command line' => sub {
 subtest 'dry run' => sub {
 	my $r = run_cli('--authorized', '--scope', $scope, '--dry-run', '--ports', '80,443', '-f', 'json');
 	is($r->{status}, 0, '--dry-run exits 0');
-	like($r->{out} . $r->{err}, qr/example\.com/, '... and lists the host it would scan');
+	like($r->{out} . $r->{err}, qr/203\.0\.113\.10/, '... and lists the host it would scan');
 	like($r->{out} . $r->{err}, qr/\b443\b/, '... and the ports');
 };
 

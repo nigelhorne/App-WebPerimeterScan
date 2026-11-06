@@ -5,6 +5,7 @@ use FindBin;
 use lib "$FindBin::Bin/../lib";
 
 use File::Temp qw(tempfile);
+use Socket ();
 use Test::More;
 use Test::Fatal;
 
@@ -49,7 +50,14 @@ is($https_entry->{scheme}, 'https', 'scheme kept from URL form');
 like(exception { $scope->assert_target_allowed('evil.com') },
 	qr/not listed in/, 'out-of-scope host is refused');
 
-is($scope->assert_target_allowed('example.com'), $scope, 'in-scope host is allowed, and the scope returned');
+{
+	# No real DNS in the tests: the name resolves to a public address.
+	no warnings 'redefine';
+	local *App::WebPerimeterScan::Scope::getaddrinfo = sub {
+		return ('', { addr => Socket::pack_sockaddr_in(0, Socket::inet_aton('93.184.215.14')) });
+	};
+	is($scope->assert_target_allowed('example.com'), $scope, 'in-scope host is allowed, and the scope returned');
+}
 
 ok($scope->is_private_target('127.0.0.1'), 'loopback detected');
 ok($scope->is_private_target('10.1.2.3'), 'RFC1918 10/8 detected');
@@ -101,7 +109,12 @@ subtest 'private address space' => sub {
 	ok($scope->is_private_target('fd00::1'), 'IPv6 unique-local is refused');
 	ok($scope->is_private_target('fe80::1'), 'IPv6 link-local is refused');
 	ok(!$scope->is_private_target('2606:4700::1'), 'a public IPv6 address is allowed');
-	ok(!$scope->is_private_target('name.invalid'), 'a name that does not resolve is not private');
+	{
+		# No real DNS in the tests: the lookup fails, as for an unknown name.
+		no warnings 'redefine';
+		local *App::WebPerimeterScan::Scope::getaddrinfo = sub { return ('Name or service not known') };
+		ok(!$scope->is_private_target('name.invalid'), 'a name that does not resolve is not private');
+	}
 };
 
 subtest 'address literals do not depend on the resolver' => sub {

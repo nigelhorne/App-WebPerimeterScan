@@ -47,12 +47,17 @@ is_deeply(
 	'only the listening port reports as open',
 );
 
-my $unresolvable = App::WebPerimeterScan::Ports->scan(
-	host => 'this-host-should-not-exist.invalid',
-	ports => [80],
-	timeout => 1,
-	banner => 0,
-);
+my $unresolvable = do {
+	# No real DNS in the tests: the name does not resolve.
+	no warnings 'redefine';
+	local *App::WebPerimeterScan::Ports::inet_aton = sub { return undef };
+	App::WebPerimeterScan::Ports->scan(
+		host    => 'this-host-should-not-exist.invalid',
+		ports   => [80],
+		timeout => 1,
+		banner  => 0,
+	);
+};
 ok($unresolvable->{error}, 'unresolvable host reports an error');
 
 # The serial path is what Windows uses, since it has no fcntl(F_SETFL);

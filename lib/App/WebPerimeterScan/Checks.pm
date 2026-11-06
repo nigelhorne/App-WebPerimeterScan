@@ -1486,6 +1486,28 @@ Page rules (C<check_page>):
 	                                       audio, video or media source over
 	                                       http://
 
+How the CSP rules judge a policy:
+
+=over 4
+
+=item * Only C<script-src> is read, or C<default-src> when there is no
+C<script-src>.  C<style-src> and the other directives are not judged.
+
+=item * C<csp-wildcard> means "any origin": C<*>, C<http:>, C<https:> or
+C<data:>.  A host wildcard such as C<https://*.example.com> is not any
+origin and is not reported.  C<'strict-dynamic'> turns the rule off,
+because browsers that support it ignore host and scheme sources.
+
+=item * C<csp-unsafe> reports C<'unsafe-inline'> only when the same
+directive has no nonce or hash (C<'nonce-...'>, C<'sha256-...'> and so
+on), because browsers then ignore C<'unsafe-inline'>.  C<'unsafe-eval'>
+is always reported.
+
+=item * Several C<Content-Security-Policy> headers are joined and read as
+one policy; see L</LIMITATIONS>.
+
+=back
+
 Probe rules (C<check_cors>, C<check_methods>):
 
 	cors-misconfiguration        high      the probe origin may read responses
@@ -1821,11 +1843,16 @@ C<check_paths>, the one check that sends requests:
 	        v
 	  return findings
 
-=head1 LICENSE AND COPYRIGHT
+=head1 AUTHOR
 
-Copyright (C) 2026 Nigel Horne.
+Nigel Horne, C<< <njh at nigelhorne.com> >>
 
-This program is free software, released under the GNU General Public
-License, version 2 (GPL2).  See the F<LICENSE> file.
+=head1 LICENCE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+Usage is subject to the GPL2 licence terms.
+If you use it,
+please let me know.
 
 =cut

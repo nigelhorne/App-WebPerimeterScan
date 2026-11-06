@@ -1021,11 +1021,16 @@ the call with a result that has an C<error> field.
 	CONNECT.
 
 
-=head1 LICENSE AND COPYRIGHT
+=head1 AUTHOR
 
-Copyright (C) 2026 Nigel Horne.
+Nigel Horne, C<< <njh at nigelhorne.com> >>
 
-This program is free software, released under the GNU General Public
-License, version 2 (GPL2).  See the F<LICENSE> file.
+=head1 LICENCE AND COPYRIGHT
+
+Copyright 2026 Nigel Horne.
+
+Usage is subject to the GPL2 licence terms.
+If you use it,
+please let me know.
 
 =cut

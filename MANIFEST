@@ -25,9 +25,13 @@ t/http.t
 t/i18n.t
 t/lib/TestServer.pm
 t/locales.t
+t/pod-coverage.t
+t/pod.t
 t/ports.t
 t/report.t
 t/scan.t
 t/scope.t
 t/source.t
 t/tls.t
+xt/pod-coverage.t
+xt/pod.t

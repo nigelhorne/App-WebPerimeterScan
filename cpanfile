@@ -9,6 +9,9 @@ requires 'Digest::MD5';
 requires 'Encode';
 requires 'Errno';
 requires 'Fcntl';
+requires 'File::Find';
+requires 'File::Spec';
+requires 'FindBin';   # bin/webperimeter
 requires 'Getopt::Long', '2.50';
 requires 'HTML::Parser', '3.71';   # also provides HTML::Entities
 requires 'HTML::SimpleLinkExtor', '1.20';
@@ -32,7 +35,11 @@ requires 'Time::Local', '1.28';
 requires 'URI', '1.70';
 requires 'autodie', '2.37';
 requires 'parent';
-requires 'version';
+requires 'version', '0.77';   # version->declare
+
+on 'configure' => sub {
+	requires 'ExtUtils::MakeMaker', '6.64';
+};
 
 on 'test' => sub {
 	requires 'File::Temp';
@@ -43,6 +50,7 @@ on 'test' => sub {
 on 'develop' => sub {
 	requires 'Devel::Cover';
 	requires 'Perl::Critic';
-	requires 'Test::Pod';
-	requires 'Test::Pod::Coverage';
+	requires 'Pod::Coverage', '0.18';
+	requires 'Test::Pod', '1.22';
+	requires 'Test::Pod::Coverage', '1.08';
 };

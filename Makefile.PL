@@ -15,6 +15,10 @@ WriteMakefile(
 	MIN_PERL_VERSION => '5.014',
 	LICENSE       => 'gpl_2',
 	EXE_FILES     => ['bin/webperimeter'],
+	CONFIGURE_REQUIRES => {
+		# TEST_REQUIRES is ignored before 6.64, and Perl 5.14 ships 6.57.
+		'ExtUtils::MakeMaker' => 6.64,
+	},
 	PREREQ_PM     => {
 		'Carp'                   => 0,
 		'Cwd'                    => 0,
@@ -23,6 +27,9 @@ WriteMakefile(
 		'Encode'                 => 0,
 		'Errno'                  => 0,
 		'Fcntl'                  => 0,
+		'File::Find'             => 0,
+		'File::Spec'             => 0,
+		'FindBin'                => 0,	# bin/webperimeter
 		'Getopt::Long'           => 2.50,
 		'HTML::Parser'           => 3.71,	# also provides HTML::Entities
 		'HTML::SimpleLinkExtor'  => 1.20,
@@ -46,7 +53,7 @@ WriteMakefile(
 		'URI'                    => 1.70,
 		'autodie'                => 2.37,
 		'parent'                 => 0,
-		'version'                => 0,
+		'version'                => 0.77,	# version->declare
 	}, TEST_REQUIRES => {
 		'File::Temp' => 0,
 		'Test::Fatal' => 0,
@@ -56,4 +63,17 @@ WriteMakefile(
 	AUTHOR        => 'Nigel Horne <njh@nigelhorne.com>',
 	dist => $dist,
 	clean	=> { FILES => 'App-WebPerimeterScan-*' },
+	META_MERGE => {
+		'meta-spec' => { version => 2 },
+		resources => {
+			repository => {
+				type => 'git',
+				url  => 'git://github.com/nigelhorne/App-WebPerimeterScan.git',
+				web  => 'https://github.com/nigelhorne/App-WebPerimeterScan',
+			},
+			bugtracker => {
+				web => 'https://github.com/nigelhorne/App-WebPerimeterScan/issues',
+			},
+		},
+	},
 );
