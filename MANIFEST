@@ -33,5 +33,3 @@ t/scan.t
 t/scope.t
 t/source.t
 t/tls.t
-xt/pod-coverage.t
-xt/pod.t

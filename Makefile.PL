@@ -18,8 +18,7 @@ WriteMakefile(
 	CONFIGURE_REQUIRES => {
 		# TEST_REQUIRES is ignored before 6.64, and Perl 5.14 ships 6.57.
 		'ExtUtils::MakeMaker' => 6.64,
-	},
-	PREREQ_PM     => {
+	}, PREREQ_PM    => {
 		'Carp'                   => 0,
 		'Cwd'                    => 0,
 		'Data::Validate::IP'     => 0.31,
@@ -39,6 +38,7 @@ WriteMakefile(
 		'IO::Socket::SSL'        => 2.000,
 		'JSON::PP'               => 4.00,
 		'Net::SSLeay'            => 1.92,
+		'Object::Configure' => 0.24,
 		'Params::Get'            => 0.17,
 		'Params::Validate::Strict' => 0.41,
 		'POSIX'                  => 0,

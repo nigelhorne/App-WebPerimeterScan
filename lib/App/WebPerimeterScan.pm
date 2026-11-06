@@ -5,6 +5,7 @@ use warnings;
 use autodie qw(:all);
 
 use HTML::SimpleLinkExtor;
+use Object::Configure;
 use Params::Get qw(get_params);
 use Params::Validate::Strict qw(validate_strict);
 use Readonly;
@@ -482,6 +483,8 @@ sub new
 		},
 		input => get_params(undef, \@_) // {},
 	);
+
+	$ args = Object::Configure::configure($class, $args);
 
 	# Explicit arguments win; anything not given comes from %config.
 	my $self = bless {
