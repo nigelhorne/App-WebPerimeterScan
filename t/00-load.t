@@ -11,9 +11,12 @@ my @modules = qw(
 	App::WebPerimeterScan::Checks
 	App::WebPerimeterScan::Findings
 	App::WebPerimeterScan::HTTP
+	App::WebPerimeterScan::I18N
+	App::WebPerimeterScan::Messages
 	App::WebPerimeterScan::Ports
 	App::WebPerimeterScan::Report
 	App::WebPerimeterScan::Scope
+	App::WebPerimeterScan::Source
 	App::WebPerimeterScan::TLS
 );
 

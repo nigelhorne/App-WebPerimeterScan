@@ -2,546 +2,92 @@ package App::WebPerimeterScan;
 
 use strict;
 use warnings;
+use autodie qw(:all);
 
 use HTML::SimpleLinkExtor;
-use Time::HiRes qw(time);
+use Params::Get qw(get_params);
+use Params::Validate::Strict qw(validate_strict);
+use Readonly;
+use Sub::Private { mode => 'enforce' };
 use URI;
 
+use App::WebPerimeterScan::I18N ();
 use App::WebPerimeterScan::Checks;
 use App::WebPerimeterScan::Findings;
 use App::WebPerimeterScan::HTTP;
 use App::WebPerimeterScan::Ports;
 use App::WebPerimeterScan::Source;
 use App::WebPerimeterScan::TLS;
+use parent -norequire, 'App::WebPerimeterScan::I18N';
 
 use version; our $VERSION = version->declare('0.001.0');
+
+# Defaults for new().  A plain hash, keyed like the constructor's
+# arguments, so Object::Configure or a caller can change them for a run.
+our %config = (
+	timeout                  => 10,		# seconds per HTTP request
+	connect_timeout          => 3,		# seconds for the port and TLS handshakes
+	delay                    => 0.5,	# seconds between requests to one host
+	depth                    => 1,		# link-following depth from the root
+	max_urls                 => 40,		# pages crawled per host
+	max_size                 => 2_000_000,	# bytes of each body kept
+	path_probes              => 1,		# request the well-known sensitive paths
+	reflection               => 0,		# send the reflected-input marker
+	max_links_per_page       => 60,		# links taken from one page
+	unvisited_evidence_limit => 10,		# routes listed in source-routes-unvisited
+	token_length             => 10,		# characters in a random probe token
+);
 
 # Crawling is for finding pages that share the site's header policy, not for
 # mirroring the site.  These are skipped so a scan does not waste requests on
 # assets.
-my %SKIP_EXTENSION = map { $_ => 1 } qw(
+Readonly::Hash my %SKIP_EXTENSION => map { $_ => 1 } qw(
 	jpg jpeg png gif svg webp ico bmp tif tiff css js mjs json map
 	pdf zip gz tgz bz2 xz rar 7z tar mp3 mp4 m4a avi mov wmv wav
 	woff woff2 ttf eot otf exe dmg iso apk jar deb rpm
 );
 
-sub new
-{
-	my ($class, %args) = @_;
-
-	my $self = bless {
-		scope       => $args{scope},
-		timeout     => $args{timeout} // 10,
-		delay       => defined $args{delay} ? $args{delay} : 0.5,
-		depth       => $args{depth} // 1,
-		max_urls    => $args{max_urls} // 40,
-		path_probes => exists $args{path_probes} ? $args{path_probes} : 1,
-		reflection  => $args{reflection} ? 1 : 0,
-		verbose     => $args{verbose} ? 1 : 0,
-		ports       => $args{ports} // [ @App::WebPerimeterScan::Ports::DEFAULT_PORTS ],
-		hosts       => {},
-		findings    => App::WebPerimeterScan::Findings->new,
-	}, $class;
-
-	$self->{connect_timeout} = $args{connect_timeout} // 3;
-
-	$self->{docroots}    = $args{docroots}    // [];
-	$self->{source_dirs} = $args{source_dirs} // [];
-
-	if(@{ $self->{docroots} } || @{ $self->{source_dirs} }) {
-		$self->{source} = App::WebPerimeterScan::Source->new(
-			docroots    => $self->{docroots},
-			source_dirs => $self->{source_dirs},
-		);
-	}
-
-	$self->{http} = App::WebPerimeterScan::HTTP->new(
-		timeout  => $self->{timeout},
-		delay    => $self->{delay},
-		max_size => $args{max_size} // 2_000_000,
-	);
-
-	return $self;
-}
-
-sub findings
-{
-	my ($self) = @_;
-
-	return $self->{findings};
-}
-
-sub http
-{
-	my ($self) = @_;
-
-	return $self->{http};
-}
-
-sub host_reports
-{
-	my ($self) = @_;
-
-	return [ map { $self->{hosts}{$_} } sort keys %{ $self->{hosts} } ];
-}
-
-sub run
-{
-	my ($self) = @_;
-
-	my @entries = $self->{scope}->hosts;
-	die "No concrete hosts in scope (only wildcards?)\n" unless @entries;
-
-	for my $entry (@entries) {
-		eval { $self->_scan_host($entry) };
-		if(my $error = $@) {
-			chomp $error;
-			$self->{findings}->add(
-				id => 'scan-error', severity => 'info',
-				host => $entry->{host},
-				title => "Scan of $entry->{host} did not complete",
-				detail => $error,
-			);
-		}
-	}
-
-	$self->_source_pass;
-
-	return $self->{findings};
-}
-
-# The parsed headers of a response plus the raw block exactly as it arrived,
-# so a finding can be checked after the fact - by another person, or on a
-# machine that cannot reach the host at all.  Duplicates are preserved
-# because a second CSP or Set-Cookie header is part of the evidence.
-sub _record_response
-{
-	my ($self, $url, $method, $res, $note) = @_;
-
-	return unless $res && !$res->{error};
-
-	my %headers;
-	for my $name (keys %{ $res->{headers} || {} }) {
-		$headers{$name} = [ @{ $res->{headers}{$name} } ];
-	}
-
-	my $record = {
-		url          => $url,
-		method       => $method || 'GET',
-		status       => $res->{status},
-		http_version => $res->{http_version},
-		reason       => $res->{reason},
-		headers      => \%headers,
-		raw          => $res->{raw_headers},
-	};
-	$record->{note} = $note if defined $note && length $note;
-
-	return $record;
-}
-
-sub _keep_response
-{
-	my ($self, $report, $url, $method, $res, $note) = @_;
-
-	my $record = $self->_record_response($url, $method, $res, $note) or return;
-
-	push @{ $report->{responses} }, $record;
-
-	return $record;
-}
-
-sub _say
-{
-	my ($self, $message) = @_;
-
-	print STDERR "[webperimeter] $message\n" if $self->{verbose};
-
-	return;
-}
-
-sub _scan_host
-{
-	my ($self, $entry) = @_;
-
-	my $host = $entry->{host};
-	$self->{scope}->assert_target_allowed($host);
-
-	$self->_say("host $host");
-
-	my $report = { host => $host, urls => [], entry => $entry };
-	$self->{hosts}{$host} = $report;
-
-	my $port_scan = App::WebPerimeterScan::Ports->scan(
-		host    => $host,
-		ports   => $self->{ports},
-		timeout => $self->{connect_timeout},
-	);
-	$report->{open_ports} = $port_scan->{open};
-	App::WebPerimeterScan::Checks::check_ports($self->{findings}, host => $host, scan => $port_scan);
-
-	my ($base, $root) = $self->_fetch_root($entry);
-	unless($base) {
-		$self->{findings}->add(
-			id => 'host-unreachable', severity => 'high',
-			host => $host, url => '',
-			title => 'Host did not answer over HTTP or HTTPS',
-			detail => 'No usable response was received on the default web ports, so the web checks could not run.',
-			evidence => 'Tried ' . join(', ', $self->_root_candidates($entry)),
-			fix => 'Confirm the hostname resolves and the web server is listening.',
-		);
-		return;
-	}
-
-	$report->{base} = $base;
-	$self->_say("base URL $base");
-
-	# The exact block the header checks were run against, so the report can
-	# be audited later without sending the request again.
-	$report->{response} = $self->_record_response($base, 'GET', $root, 'main page');
-
-	# Inspect TLS whenever HTTPS is actually served, and also when 443 is
-	# open but the handshake failed - that failure is itself a finding.
-	my $tls_port;
-	if($base =~ m{^https://}i) {
-		my $uri = URI->new($base);
-		$tls_port = $uri->port || 443;
-	} elsif(grep { $_->{port} == 443 || $_->{port} == 8443 } @{ $port_scan->{open} || [] }) {
-		$tls_port = 443;
-	}
-
-	if($tls_port) {
-		my $tls = App::WebPerimeterScan::TLS->inspect(
-			host => $host, port => $tls_port, timeout => $self->{connect_timeout},
-		);
-		$report->{tls} = $tls;
-		App::WebPerimeterScan::Checks::check_tls($self->{findings}, host => $host, tls => $tls);
-	}
-
-	my $root_url = $base;
-	$root_url =~ s{/+$}{};
-
-	# Same-origin probes: a foreign Origin header, an OPTIONS request, and
-	# the plaintext hop that HSTS depends on.
-	my $origin = App::WebPerimeterScan::Checks::probe_origin();
-	my $cors = $self->{http}->fetch($base, headers => [ "Origin: $origin" ]);
-	App::WebPerimeterScan::Checks::check_cors($self->{findings}, host => $host, url => $base, res => $cors);
-	$self->_keep_response($report, $base, 'GET', $cors, "Origin: $origin");
-
-	my $options = $self->{http}->fetch($base, method => 'OPTIONS');
-	App::WebPerimeterScan::Checks::check_methods($self->{findings}, host => $host, url => $base, res => $options);
-	$self->_keep_response($report, $base, 'OPTIONS', $options);
-
-	if($base =~ m{^https://}i && !$entry->{port}) {
-		my $plain = $self->{http}->fetch("http://$host/");
-		$self->_keep_response($report, "http://$host/", 'GET', $plain, 'plaintext hop');
-		if(!$plain->{error}) {
-			my $location = $plain->{headers}{location} ? $plain->{headers}{location}[-1] : '';
-			my $status = $plain->{status} // 0;
-			if($status !~ /^30[1238]$/ || $location !~ m{^https://}i) {
-				$self->{findings}->add(
-					id => 'no-https-redirect', severity => 'medium',
-					host => $host, url => '',
-					title => 'Plain HTTP does not redirect to HTTPS',
-					detail => 'The first request a visitor makes can be read or rewritten by a network attacker before any HSTS policy is learned.',
-					evidence => "GET http://$host/ returned $status" . (length $location ? " with Location: $location" : ' with no HTTPS redirect'),
-					fix => 'Redirect all HTTP requests to HTTPS with a 301, and send HSTS on the HTTPS response.',
-					reference => 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections',
-				);
-			}
-		}
-	}
-
-	# Crawl the site's own pages, depth-first from the root, within budget.
-	my @queue = ([ $base, 0 ]);
-	my %seen = ($base => 1);
-	my $fetched = 0;
-
-	while(@queue && $fetched < $self->{max_urls}) {
-		my ($url, $depth) = @{ shift @queue };
-
-		my $res = ($url eq $base) ? $root : $self->{http}->fetch($url);
-		next if $res->{error};
-
-		$fetched++;
-		push @{ $report->{urls} }, $url;
-
-		App::WebPerimeterScan::Checks::check_page(
-			$self->{findings}, host => $host, url => $url, res => $res,
-		);
-
-		next if $depth >= $self->{depth};
-		next unless ($res->{content_type} // '') =~ m{text/html|application/xhtml}i;
-
-		for my $link ($self->_links($res->{body}, $url)) {
-			my $uri = eval { URI->new($link) } or next;
-			next unless $self->{scope}->covers($uri->host);
-			next if $seen{$link}++;
-
-			push @queue, [ $link, $depth + 1 ];
-		}
-	}
-
-	$self->_say("$fetched URL(s) scanned on $host");
-
-	if($self->{path_probes}) {
-		my $token = _random_token();
-
-		# A path that certainly does not exist.  Its fingerprint tells us
-		# whether this application answers 200 for everything, in which case
-		# a 200 on /.git/config proves nothing.
-		my $miss = $self->{http}->fetch($root_url . "/ws-baseline-$token.html");
-		my $baseline = App::WebPerimeterScan::Checks::fingerprint($miss);
-
-		if(!$miss->{error} && ($miss->{status} // 0) == 200) {
-			$self->{findings}->add(
-				id => 'catch-all-200', severity => 'info',
-				host => $host, url => '',
-				title => 'Application answers 200 for paths that do not exist',
-				detail => 'Path-probe results were compared against this response and only reported when the content actually matched, so there should be no false positives from the catch-all behaviour. It is still worth fixing: it confuses monitoring and search engines.',
-				evidence => "GET /ws-baseline-$token.html returned 200",
-				fix => 'Return 404 for unknown paths.',
-			);
-		}
-
-		App::WebPerimeterScan::Checks::check_paths(
-			$self->{findings},
-			http     => $self->{http},
-			host     => $host,
-			base     => $base,
-			baseline => $baseline,
-		);
-	}
-
-	$self->_reflection_probe($host, $base) if $self->{reflection};
-
-	$self->_unvisited_routes($host, $report) if $self->{source};
-
-	return;
-}
-
-# ---------------------------------------------------------------------------
-# Source-aware pass
-#
-# A black-box scan can only say that a URL answered.  Given a docroot and a
-# source tree it can also say which file on disk is being served and which
-# line of code defines the endpoint, which is what makes a finding actionable.
-# ---------------------------------------------------------------------------
-
-sub _url_path
-{
-	my ($self, $url) = @_;
-
-	my $uri = eval { URI->new($url) } or return;
-
-	return $uri->path;
-}
-
-sub _source_pass
-{
-	my ($self) = @_;
-
-	my $source = $self->{source} or return;
-
-	for my $finding ($self->{findings}->all) {
-		next unless length $finding->{url};
-
-		my $path = $self->_url_path($finding->{url});
-		next unless defined $path && length $path;
-
-		if(my $file = $source->file_for($path)) {
-			$finding->{file} = $file->{path};
-		}
-		if(my $route = $source->route_for($path)) {
-			$finding->{source} = "$route->{file}:$route->{line}";
-		}
-	}
-
-	$self->_docroot_files($source);
-
-	return;
-}
-
-# A sensitive file that is on disk but was not served is a deployment hazard
-# waiting for one configuration change, so it ranks below the same file being
-# served for real.  It is keyed on the file so several probes cannot repeat it.
-sub _docroot_files
-{
-	my ($self, $source) = @_;
-
-	my $findings = $self->{findings};
-
-	for my $probe (App::WebPerimeterScan::Checks::sensitive_probes()) {
-		next unless $probe->{severity} eq 'critical' || $probe->{severity} eq 'high';
-		next if grep { $_->{id} eq $probe->{id} } $findings->all;
-
-		my $hit = $source->file_for($probe->{path}) or next;
-
-		$findings->add(
-			id       => 'source-file-in-docroot',
-			severity => $probe->{severity} eq 'critical' ? 'medium' : 'low',
-			host     => '',
-			url      => '',
-			key      => $hit->{path},
-			title    => "Sensitive file is inside a document root: $hit->{relative}",
-			detail   => 'The file is on disk under a docroot but was not served during this scan. Any change that starts serving dotfiles - a handler, a rewrite, a new vhost - exposes it at once.',
-			evidence => $hit->{path},
-			fix      => 'Move it above the document root, or deny the path at the web server.',
-		);
-	}
-
-	return;
-}
-
-# The routes in the source that no crawled page linked to: the coverage gap a
-# link-following scan cannot see, and where real endpoints usually hide.
-sub _unvisited_routes
-{
-	my ($self, $host, $report) = @_;
-
-	my @routes = $self->{source}->routes;
-	return unless @routes;
-
-	my %visited;
-	for my $url (@{ $report->{urls} }) {
-		my $path = $self->_url_path($url);
-		$visited{$path} = 1 if defined $path && length $path;
-	}
-
-	# Path probes are not part of the crawl, but a finding that names a URL
-	# proves that URL was requested, so a route serving it is not a gap.
-	for my $finding ($self->{findings}->all) {
-		next unless length $finding->{url};
-		my $path = $self->_url_path($finding->{url});
-		$visited{$path} = 1 if defined $path && length $path;
-	}
-
-	my @unvisited;
-	for my $route (@routes) {
-		next if grep { $_ =~ $route->{re} } keys %visited;
-		push @unvisited, $route;
-	}
-	return unless @unvisited;
-
-	my $last = $#unvisited > 9 ? 9 : $#unvisited;
-	$self->{findings}->add(
-		id       => 'source-routes-unvisited',
-		severity => 'info',
-		host     => $host,
-		url      => '',
-		title    => scalar(@unvisited) . ' endpoint(s) defined in source were not scanned',
-		detail   => 'These routes exist in the code but no crawled page linked to them, so none of the checks above saw how they behave. They are exactly the surface a link-following scan never reaches.',
-		evidence => join('; ', map { "$_->{file}:$_->{line} $_->{method} $_->{pattern}" } @unvisited[ 0 .. $last ]),
-		fix      => 'Name them explicitly, raise --max-urls, or review them by hand.',
-	);
-
-	return;
-}
-
-sub _root_candidates
-{
-	my ($self, $entry) = @_;
-
-	my $host = $entry->{host};
-
-	if($entry->{port}) {
-		my $scheme = $entry->{scheme}
-			|| ($entry->{port} == 443 || $entry->{port} == 8443 ? 'https' : 'http');
-		return ("$scheme://$host:$entry->{port}/");
-	}
-	return ("$entry->{scheme}://$host/") if $entry->{scheme};
-	return ("https://$host/", "http://$host/");
-}
-
-sub _fetch_root
-{
-	my ($self, $entry) = @_;
-
-	for my $base ($self->_root_candidates($entry)) {
-		my $res = $self->{http}->fetch($base);
-		next if $res->{error};
-		return ($base, $res);
-	}
-
-	return;
-}
-
-sub _links
-{
-	my ($self, $body, $base) = @_;
-
-	return () unless defined $body && length $body;
-
-	my $extor = eval { HTML::SimpleLinkExtor->new($base) };
-	return () unless $extor;
-	eval { $extor->parse($body) };
-	return () if $@;
-
-	my (@links, %seen);
-	for my $found ($extor->links) {
-		my $uri = eval { URI->new_abs($found, $base) } or next;
-		my $scheme = lc($uri->scheme // '');
-		next unless $scheme eq 'http' || $scheme eq 'https';
-
-		$uri->fragment(undef);
-		my $path = $uri->path // '';
-		if($path =~ /\.([A-Za-z0-9]+)$/) {
-			next if $SKIP_EXTENSION{ lc $1 };
-		}
-
-		my $string = $uri->as_string;
-		next if $seen{$string}++;
-		push @links, $string;
-		last if @links >= 60;
-	}
-
-	return @links;
-}
-
-# Opt-in: send one harmless marker in a query parameter and see whether it
-# comes back unencoded.  This is a hint for a human to follow up, not a proof
-# of cross-site scripting, so it is reported as a low-severity prompt.
-sub _reflection_probe
-{
-	my ($self, $host, $base) = @_;
-
-	my $marker = 'wsp' . _random_token();
-	my $payload = $marker . '</x>';
-
-	my $uri = URI->new($base);
-	my $query = $uri->query // '';
-	$query .= '&' if length $query;
-	$query .= 'wsprobe=' . $marker . '%3C%2Fx%3E';
-	$uri->query($query);
-
-	my $res = $self->{http}->fetch($uri->as_string);
-	return if $res->{error};
-
-	my $body = $res->{body} // '';
-	return unless index($body, $payload) >= 0;
-
-	$self->{findings}->add(
-		id => 'reflected-input', severity => 'medium',
-		host => $host, url => $uri->as_string,
-		title => 'Query parameter is reflected without HTML encoding',
-		detail => 'The marker was returned verbatim, including its angle brackets. That is the precondition for reflected cross-site scripting; it still needs a human to confirm that a browser will execute the result.',
-		evidence => "Sent wsprobe=$marker%3C%2Fx%3E and received it back unencoded",
-		fix => 'HTML-encode all output, and add a CSP that forbids inline script.',
-		reference => 'https://cwe.mitre.org/data/definitions/79.html',
-	);
-
-	return;
-}
-
-sub _random_token
-{
-	my @chars = ( 'a' .. 'z', 0 .. 9 );
-
-	return join '', map { $chars[ int rand @chars ] } 1 .. 10;
-}
-
-1;
-
-__END__
+# Only pages of these types are parsed for links.
+Readonly::Scalar my $HTML_TYPE => qr{text/html|application/xhtml}i;
+
+# Ports where TLS is expected, in the order they are tried.
+Readonly::Array my @TLS_PORTS => (443, 8443);
+Readonly::Hash my %TLS_PORT => map { $_ => 1 } @TLS_PORTS;
+
+# Every redirect status that keeps the visitor's request working.  307 was
+# missing from the earlier list, so a 307 to HTTPS was reported as no redirect.
+Readonly::Hash my %REDIRECT => map { $_ => 1 } (301, 302, 303, 307, 308);
+Readonly::Scalar my $HTTP_OK => 200;
+
+Readonly::Scalar my $HTTPS_URL => qr{\Ahttps://}i;
+Readonly::Hash my %WEB_SCHEME => (http => 1, https => 1);
+
+# A sensitive file on disk but not served is a hazard waiting for one
+# configuration change, so it ranks below the same file being served.
+Readonly::Hash my %DOCROOT_SEVERITY => (critical => 'medium', high => 'low');
+
+# The reflected-input marker: a parameter name, and a closing tag that is
+# only returned as-is if the page does not encode its output.
+Readonly::Scalar my $REFLECTION_PARAMETER => 'wsprobe';
+Readonly::Scalar my $REFLECTION_RAW       => '</x>';
+Readonly::Scalar my $REFLECTION_ENCODED   => '%3C%2Fx%3E';
+
+# Probe-path token alphabet.
+Readonly::Array my @TOKEN_CHARS => ('a' .. 'z', 0 .. 9);
+
+# The runner's own rules: default severity and reference.  Text is in the
+# message catalogue under the same ids.
+Readonly::Hash my %RULE => (
+	'scan-error'              => { severity => 'high' },
+	'host-unreachable'        => { severity => 'high' },
+	'no-https-redirect'       => { severity => 'medium', reference => 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections' },
+	'catch-all-200'           => { severity => 'info' },
+	'reflected-input'         => { severity => 'medium', reference => 'https://cwe.mitre.org/data/definitions/79.html' },
+	'source-file-in-docroot'  => { severity => 'medium' },
+	'source-routes-unvisited' => { severity => 'info' },
+);
+
+=encoding utf8
 
 =head1 NAME
 
@@ -560,7 +106,7 @@ Version 0.001.0
 	my $scanner = App::WebPerimeterScan->new(scope => $scope, depth => 1);
 	my $findings = $scanner->run;
 
-	print $_->{severity}, ' ', $_->{title}, "\n" for $findings->sorted;
+	print "$_->{severity} $_->{title}\n" for @{ $findings->sorted };
 
 =head1 DESCRIPTION
 
@@ -577,23 +123,27 @@ F<README.md> is generated from this POD by F<pod2github>: change the POD and
 regenerate, rather than editing the README by hand.
 
 The scope file is the authorisation boundary: a host that does not appear in
-it is never contacted, including hosts discovered by following links.
+it is never contacted, including hosts discovered by following links, and a
+host that resolves into private address space is refused unless
+C<--allow-private> is given.
+
+Every message the tool prints comes from a catalogue
+(L<App::WebPerimeterScan::Messages>), so the text can be translated without
+touching the code; see L<App::WebPerimeterScan::I18N>.
 
 =head1 REQUIREMENTS
 
-Perl 5.10.0 or later, with the modules listed in F<Makefile.PL>.  The minimum
-Perl was measured with L<Perl::MinimumVersion> rather than guessed, and the
-suite is run against 5.10.1 as well as current perls.  C<cpan> installs
-anything that is missing, so these floors matter mainly on a machine that
-already has older copies of them:
+Perl 5.14.0 or later, with the modules listed in F<Makefile.PL>.  The floor
+is set by L<Sub::Private>, which needs C<${^GLOBAL_PHASE}>; everything else
+would run on 5.10.  C<cpan> installs anything that is missing, so these
+floors matter mainly on a machine that already has older copies of them:
 
 =over 4
 
 =item * C<Socket> 2.020
 
-The core of Perl 5.10.1 ships 2.018, so this is a real installation step on
-the minimum Perl.  The port scan reads C<SO_ERROR> from it to tell a refused
-connection from an open one.
+The port scan reads C<SO_ERROR> from it to tell a refused connection from an
+open one, and the private-address check uses its C<getaddrinfo>.
 
 =item * C<Net::SSLeay> 1.92
 
@@ -604,9 +154,22 @@ supported: 1.46 does not compile against OpenSSL 3 at all.
 
 =item * C<IO::Select> 1.17 and C<IO::Socket::INET> 1.31
 
-The versions that ship with Perl 5.10.1, so the minimum Perl needs no
-upgrade here.  They are stated because the port scan relies on how they
-behave, not only on what they provide.
+They are stated because the port scan relies on how they behave, not only
+on what they provide.
+
+=item * C<Sub::Private> 0.09 and C<Sub::Protected> 0.03
+
+Every internal routine is wrapped so that a call from outside its package
+croaks.  Tests run under C<prove> are exempt (C<HARNESS_ACTIVE>).
+
+=item * C<Params::Get> 0.17 and C<Params::Validate::Strict> 0.41
+
+Every public routine validates its arguments against the schema in its
+documentation.
+
+=item * C<Data::Validate::IP> 0.31
+
+Classifies resolved addresses against the IANA special-purpose registries.
 
 =back
 
@@ -614,12 +177,10 @@ Both SSL modules need the OpenSSL headers at install time, which the
 installer cannot supply for you; install your distribution's C<openssl>
 development package first if the build fails.
 
-The remaining prerequisites are C<Getopt::Long> 2.50,
-C<HTML::SimpleLinkExtor> 1.20, C<JSON::PP> 4.00, C<Time::HiRes> 1.97,
-C<Time::Local> 1.28 and C<URI> 1.70, plus C<Test::More> 1.302 for the test
-suite.  Several of these are newer than the copies that ship with Perl 5.10,
-so on the minimum Perl let the installer upgrade them instead of pinning the
-core versions.
+The remaining prerequisites are C<autodie> with C<IPC::System::Simple>,
+C<Getopt::Long> 2.50, C<HTML::Parser> 3.71, C<HTML::SimpleLinkExtor> 1.20,
+C<JSON::PP> 4.00, C<Readonly> 2.05, C<Time::HiRes> 1.97 and C<URI> 1.70, plus
+C<Test::More> 1.302 for the test suite.
 
 =head1 USAGE
 
@@ -674,7 +235,7 @@ finding - means the scan is broken, not the site.
 
 =head1 EXAMPLE
 
-A real run against a local application, with its source tree supplied so the
+A run against a local application, with its source tree supplied so the
 report can name the endpoints it never reached.  The output is trimmed in the
 middle for length.
 
@@ -693,26 +254,29 @@ middle for length.
 	  URLs scanned: 6
 
 
-	LOW (2)
+	LOW (1)
 	-------
-	[csp-unsafe] Content-Security-Policy permits unsafe-inline or unsafe-eval
-	  Evidence: default-src 'self'; script-src 'self' 'nonce-...' https://cdnjs.cloudflare.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; [...]
-
 	[port-open-3000] Port 3000 accepts connections from outside the host
 	  Evidence: TCP connect succeeded, no banner
 
 
 	INFO (1)
 	--------
-	[source-routes-unvisited] 71 endpoint(s) defined in source were not scanned
+	[source-routes-unvisited] 71 endpoints defined in source were not scanned
 	  Evidence: ~/src/njh/Database-BI/lib/Database/BI.pm:2713 GET /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2714 POST /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2715 POST /logout; [...]
 	  Fix: Name them explicitly, raise --max-urls, or review them by hand.
 
-	Summary: 0 critical, 0 high, 0 medium, 2 low, 1 info
+	Summary: 0 critical, 0 high, 0 medium, 1 low, 1 info
 
-C<--allow-private> is required for a loopback or RFC1918 target; without it the
-host is refused before any traffic is sent.  The exit status is 0 here because
-C<--fail-on> defaults to C<high> and nothing reached it.
+That application sends C<style-src 'self' 'unsafe-inline'> with a
+nonce-based C<script-src>.  Only the script sources are judged, so the
+inline-style allowance is not reported as a cross-site scripting gap.
+
+C<--allow-private> is required for a loopback or private target; without it
+the host is refused before any traffic is sent, and the refusal is reported
+as a high-severity C<scan-error> so the exit status shows that nothing was
+scanned.  The exit status is 0 here because C<--fail-on> defaults to
+C<high> and nothing reached it.
 
 C<--no-path-probes> skips the well-known sensitive path checks, which ask
 whether a deployed document root exposes files such as C</.git/config>.  The
@@ -752,6 +316,991 @@ A header appears once per value, so a second C<Content-Security-Policy> or
 C<Set-Cookie> is not lost.  C<raw> is the block exactly as it arrived.
 C<responses> holds the same structure for the CORS and C<OPTIONS> probes, which
 is where the CORS and method findings come from.
+
+=head1 SUBROUTINES/METHODS
+
+=head2 new
+
+Purpose: configure a scan.
+
+Args: named, all optional except that C<run> needs C<scope>:
+
+	scope            an App::WebPerimeterScan::Scope (or anything with
+	                 hosts, covers, allows and assert_target_allowed)
+	timeout          seconds per HTTP request (10)
+	connect_timeout  seconds for port and TLS handshakes (3)
+	delay            seconds between requests to one host (0.5)
+	depth            link-following depth from each root URL (1)
+	max_urls         pages crawled per host (40)
+	max_size         bytes of each response body kept (2000000)
+	path_probes      request the well-known sensitive paths (1)
+	reflection       send the reflected-input marker (0)
+	verbose          progress on STDERR (0)
+	ports            array reference of TCP ports (the Ports default list)
+	docroots         array reference of document roots on this machine
+	source_dirs      array reference of source trees on this machine
+
+Defaults come from C<%App::WebPerimeterScan::config>.
+
+Returns: the new object.
+
+Side Effects: none; no traffic is sent until C<run>.
+
+Usage: C<< my $scanner = App::WebPerimeterScan->new(scope => $scope); >>
+
+=head3 EXAMPLE
+
+	my $scanner = App::WebPerimeterScan->new(
+		scope       => $scope,
+		ports       => [ 80, 443 ],
+		max_urls    => 1,
+		path_probes => 0,
+		source_dirs => [ "$ENV{HOME}/src/my-app" ],
+	);
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{
+		scope           => { type => 'object', can => [qw(hosts covers allows assert_target_allowed)], optional => 1 },
+		timeout         => { type => 'number', min => 0, optional => 1 },
+		connect_timeout => { type => 'number', min => 0, optional => 1 },
+		delay           => { type => 'number', min => 0, optional => 1 },
+		depth           => { type => 'integer', min => 0, optional => 1 },
+		max_urls        => { type => 'integer', min => 1, optional => 1 },
+		max_size        => { type => 'integer', min => 1, optional => 1 },
+		path_probes     => { type => 'boolean', optional => 1 },
+		reflection      => { type => 'boolean', optional => 1 },
+		verbose         => { type => 'boolean', optional => 1 },
+		ports           => { type => 'arrayref', element_type => 'integer', optional => 1 },
+		docroots        => { type => 'arrayref', optional => 1 },
+		source_dirs     => { type => 'arrayref', optional => 1 },
+	}
+
+=head4 OUTPUT
+
+	{ type => 'object', isa => 'App::WebPerimeterScan' }
+
+=head3 MESSAGES
+
+	Message                                   Meaning / resolution
+	----------------------------------------  ------------------------------
+	Unknown parameter 'X' (fatal)             A misspelt argument name.
+	Parameter 'X' ... must be ... (fatal)     A value of the wrong type or
+	                                          out of range, e.g. depth => -1.
+	Parameter 'scope' must be an object that  Pass an App::WebPerimeterScan::
+	understands the ... method (fatal)        Scope.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ InitScanner ───────────────────────────────────────
+	│ Scanner'; args? : NAME ⇸ VALUE
+	├─────────────────────────────────────────────────────
+	│ dom args? ⊆ dom config
+	│ ∀ k ∈ dom config • setting'(k) = (config ⊕ args?)(k)
+	│ findings' = ∅ ∧ hosts' = ∅
+	│ source' ≠ ⊥ ⇔ docroots? ≠ ⟨⟩ ∨ source_dirs? ≠ ⟨⟩
+	└─────────────────────────────────────────────────────
+
+=head3 PSEUDOCODE
+
+	validate the arguments
+	overlay them on %config
+	create the findings collector and the HTTP client
+	create the source index if any docroot or source tree was given
+
+=cut
+
+sub new
+{
+	my $class = shift;
+
+	my $args = validate_strict(
+		schema => {
+			scope           => { type => 'object', can => [qw(hosts covers allows assert_target_allowed)], optional => 1 },
+			timeout         => { type => 'number', min => 0, optional => 1 },
+			connect_timeout => { type => 'number', min => 0, optional => 1 },
+			delay           => { type => 'number', min => 0, optional => 1 },
+			depth           => { type => 'integer', min => 0, optional => 1 },
+			max_urls        => { type => 'integer', min => 1, optional => 1 },
+			max_size        => { type => 'integer', min => 1, optional => 1 },
+			path_probes     => { type => 'boolean', optional => 1 },
+			reflection      => { type => 'boolean', optional => 1 },
+			verbose         => { type => 'boolean', optional => 1 },
+			ports           => { type => 'arrayref', element_type => 'integer', optional => 1 },
+			docroots        => { type => 'arrayref', optional => 1 },
+			source_dirs     => { type => 'arrayref', optional => 1 },
+		},
+		input => get_params(undef, \@_) // {},
+	);
+
+	# Explicit arguments win; anything not given comes from %config.
+	my $self = bless {
+		%config,
+		(map { $_ => $args->{$_} } grep { defined $args->{$_} } keys %{$args}),
+		hosts    => {},
+		findings => App::WebPerimeterScan::Findings->new,
+	}, $class;
+
+	$self->{ports}       //= [ @App::WebPerimeterScan::Ports::DEFAULT_PORTS ];
+	$self->{docroots}    //= [];
+	$self->{source_dirs} //= [];
+
+	$self->{http} = App::WebPerimeterScan::HTTP->new(
+		map { $_ => $self->{$_} } qw(timeout delay max_size)
+	);
+
+	# The source-aware pass only runs when there is something to map to.
+	$self->{source} = App::WebPerimeterScan::Source->new(
+		docroots    => $self->{docroots},
+		source_dirs => $self->{source_dirs},
+	) if @{ $self->{docroots} } || @{ $self->{source_dirs} };
+
+	return $self;
+}
+
+=head2 findings
+
+Purpose: the findings collector the scan writes to.
+
+Args: none.
+
+Returns: an L<App::WebPerimeterScan::Findings>.
+
+Side Effects: none.
+
+Usage: C<< my $count = $scanner->findings->count; >>
+
+=head3 EXAMPLE
+
+	$scanner->run;
+	printf "%d finding(s)\n", $scanner->findings->count;
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{}
+
+=head4 OUTPUT
+
+	{ type => 'object', isa => 'App::WebPerimeterScan::Findings' }
+
+=head3 MESSAGES
+
+None.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ FindingsOf ────────────────────────────────────────
+	│ ΞScanner; result! : FINDINGS
+	├─────────────────────────────────────────────────────
+	│ result! = findings
+	└─────────────────────────────────────────────────────
+
+=cut
+
+sub findings
+{
+	my ($self) = @_;
+
+	return $self->{findings};
+}
+
+=head2 http
+
+Purpose: the HTTP client, for its request count or to make further
+requests under the same throttle.
+
+Args: none.
+
+Returns: an L<App::WebPerimeterScan::HTTP>.
+
+Side Effects: none.
+
+Usage: C<< printf "Requests: %d\n", $scanner->http->requests; >>
+
+=head3 EXAMPLE
+
+	$scanner->run;
+	print $scanner->http->requests, " requests sent\n";
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{}
+
+=head4 OUTPUT
+
+	{ type => 'object', isa => 'App::WebPerimeterScan::HTTP' }
+
+=head3 MESSAGES
+
+None.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ HttpOf ────────────────────────────────────────────
+	│ ΞScanner; result! : HTTP
+	├─────────────────────────────────────────────────────
+	│ result! = http
+	└─────────────────────────────────────────────────────
+
+=cut
+
+sub http
+{
+	my ($self) = @_;
+
+	return $self->{http};
+}
+
+=head2 host_reports
+
+Purpose: what the scan learned about each host, for the report formats.
+
+Args: none.
+
+Returns: an array reference, sorted by host, of hash references with
+C<host>, C<entry> (the scope entry), C<urls> (pages crawled),
+C<open_ports>, C<base> (the root URL that answered), C<tls> (the
+L<App::WebPerimeterScan::TLS/inspect> result, when TLS was inspected),
+C<response> (the main page's header block) and C<responses> (the probes'
+header blocks).  See L</REPORT FORMAT>.
+
+Side Effects: none.
+
+Usage: C<< my $hosts = $scanner->host_reports; >>
+
+=head3 EXAMPLE
+
+	for my $host (@{ $scanner->host_reports }) {
+		printf "%s: %d page(s)\n", $host->{host}, scalar @{ $host->{urls} };
+	}
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{}
+
+=head4 OUTPUT
+
+	{ type => 'arrayref', element_type => 'hashref' }
+
+=head3 MESSAGES
+
+None.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ HostReports ───────────────────────────────────────
+	│ ΞScanner; result! : seq HOSTREPORT
+	├─────────────────────────────────────────────────────
+	│ ran result! = ran hosts
+	│ ∀ i : 1 .. #result! − 1 • result!(i).host < result!(i + 1).host
+	└─────────────────────────────────────────────────────
+
+=cut
+
+sub host_reports
+{
+	my ($self) = @_;
+
+	return [ map { $self->{hosts}{$_} } sort keys %{ $self->{hosts} } ];
+}
+
+=head2 run
+
+Purpose: scan every concrete host in the scope.
+
+Args: none.
+
+Returns: the L<App::WebPerimeterScan::Findings> collector.
+
+Side Effects: network traffic to the hosts in scope, and only to them.  A
+host that cannot be scanned (refused by the scope, or an unexpected error)
+becomes a high-severity C<scan-error> finding rather than stopping the run,
+so the other hosts are still scanned and the exit status shows the gap.
+
+Usage: C<< my $findings = $scanner->run; >>
+
+=head3 EXAMPLE
+
+	my $findings = App::WebPerimeterScan->new(scope => $scope)->run;
+	exit(@{ $findings->at_or_above('high') } ? 1 : 0);
+
+=head3 API SPECIFICATION
+
+=head4 INPUT
+
+	{}
+
+=head4 OUTPUT
+
+	{ type => 'object', isa => 'App::WebPerimeterScan::Findings' }
+
+=head3 MESSAGES
+
+	Message                                     Meaning / resolution
+	------------------------------------------  ------------------------------
+	No scope was given; a scan needs one        Pass scope => ... to new().
+	before it can send any traffic (fatal)
+	No concrete hosts in scope (only            The scope file lists only
+	wildcards?) (fatal)                         *.domain lines; add a host.
+
+=head3 FORMAL SPECIFICATION
+
+	┌─ Run ───────────────────────────────────────────────
+	│ ΔScanner; result! : FINDINGS
+	├─────────────────────────────────────────────────────
+	│ scope ≠ ⊥ ∧ hosts(scope) ≠ ⟨⟩
+	│ contacted' ⊆ { h | allows(scope, h) }
+	│ ∀ e ∈ ran hosts(scope) •
+	│     scanned(e) ∨ (scan-error, e.host) ∈ keys(findings')
+	│ result! = findings'
+	└─────────────────────────────────────────────────────
+
+=head3 PSEUDOCODE
+
+	croak without a scope or without concrete hosts
+	for each host in scope
+		refuse it if it is out of scope or private (and not allowed)
+		port scan; fetch the root over HTTPS then HTTP
+		inspect TLS where it is served
+		send the CORS, OPTIONS and plaintext-redirect probes
+		crawl same-scope links breadth-first within depth and budget
+		probe the well-known sensitive paths against a not-found baseline
+		optionally send the reflection marker
+		list source routes the crawl never reached
+		on any error, record a scan-error finding and go on
+	map findings to files and source lines; report sensitive files on disk
+
+=cut
+
+sub run
+{
+	my ($self) = @_;
+
+	my $scope = $self->{scope};
+	$self->_throw('scan.no_scope') unless $scope;
+
+	my $hosts = $scope->hosts;
+	$self->_throw('scan.no_hosts') unless @{$hosts};
+
+	# One host failing must not stop the others; the failure is a finding.
+	for my $entry (@{$hosts}) {
+		next if eval { $self->_scan_host($entry); 1 };
+		$self->_report('scan-error',
+			host     => $entry->{host},
+			evidence => App::WebPerimeterScan::I18N::clean_error($@),
+			vars     => { host => $entry->{host} },
+		);
+	}
+
+	$self->_source_pass;
+
+	return $self->{findings};
+}
+
+# _report
+# Purpose:     record one of the runner's own findings, with the rule
+#              table's defaults.
+# Entry:       $id is a key of %RULE with catalogue text.
+# Exit:        what Findings::report returns.
+# Side effects: adds a finding.
+sub _report :Private
+{
+	my ($self, $id, %args) = @_;
+
+	return $self->{findings}->report($id, rule => $RULE{$id}, %args);
+}
+
+# _record_response
+# Purpose:     the parsed headers of a response plus the raw block exactly as
+#              it arrived, so a finding can be checked after the fact - by
+#              another person, or on a machine that cannot reach the host.
+# Entry:       $res is a fetch() result.
+# Exit:        a hashref, or undef for a failed request.
+# Side effects: none.  Duplicate headers are preserved: a second CSP or
+#              Set-Cookie header is part of the evidence.
+sub _record_response :Private
+{
+	my ($self, $url, $method, $res, $note) = @_;
+
+	return undef unless $res && !$res->{error};
+
+	my %record = (
+		url          => $url,
+		method       => $method || 'GET',
+		status       => $res->{status},
+		http_version => $res->{http_version},
+		reason       => $res->{reason},
+		# A copy, so later changes to the response cannot alter the record.
+		headers      => { map { $_ => [ @{ $res->{headers}{$_} } ] } keys %{ $res->{headers} || {} } },
+		raw          => $res->{raw_headers},
+	);
+	$record{note} = $note if defined $note && length $note;
+
+	return \%record;
+}
+
+# _keep_response
+# Purpose:     record a probe's response in the host report.
+# Entry:       $report is a host report.
+# Exit:        $self.
+# Side effects: appends to $report->{responses} for a successful request.
+sub _keep_response :Private
+{
+	my ($self, $report, $url, $method, $res, $note) = @_;
+
+	my $record = $self->_record_response($url, $method, $res, $note);
+	push @{ $report->{responses} }, $record if $record;
+
+	return $self;
+}
+
+# _say
+# Purpose:     progress output in verbose mode.
+# Entry:       $key is a catalogue key; $args its placeholders.
+# Exit:        $self.
+# Side effects: prints one line to STDERR when verbose.
+sub _say :Private
+{
+	my ($self, $key, $args) = @_;
+
+	print STDERR $self->i18n('scan.progress', { message => $self->i18n($key, $args) }), "\n"
+		if $self->{verbose};
+
+	return $self;
+}
+
+# _scan_host
+# Purpose:     every check against one scope entry.
+# Entry:       $entry is a concrete scope entry.
+# Exit:        $self.
+# Side effects: network traffic; adds findings; records the host report.
+#              Croaks if the scope refuses the host.
+sub _scan_host :Private
+{
+	my ($self, $entry) = @_;
+
+	my $host = $entry->{host};
+	$self->{scope}->assert_target_allowed($host);
+	$self->_say('scan.progress.host', { host => $host });
+
+	my $report = { host => $host, urls => [], responses => [], entry => $entry };
+	$self->{hosts}{$host} = $report;
+
+	my $port_scan = $self->_scan_ports($report);
+
+	my ($base, $root) = @{ $self->_fetch_root($entry) || [] };
+	unless($base) {
+		$self->_report('host-unreachable', host => $host,
+			vars => { tried => join(', ', @{ $self->_root_candidates($entry) }) });
+		return $self;
+	}
+
+	$report->{base} = $base;
+	$self->_say('scan.progress.base', { base => $base });
+
+	# The exact block the header checks were run against, so the report can
+	# be audited later without sending the request again.
+	$report->{response} = $self->_record_response($base, 'GET', $root, $self->i18n('scan.note.main'));
+
+	$self->_inspect_tls($report, $port_scan);
+	$self->_probe_same_origin($report);
+	$self->_check_plaintext_hop($report) if $base =~ $HTTPS_URL && !$entry->{port};
+	$self->_crawl($report, $root);
+	$self->_path_probes($report) if $self->{path_probes};
+	$self->_reflection_probe($report) if $self->{reflection};
+	$self->_unvisited_routes($report) if $self->{source};
+
+	return $self;
+}
+
+# _scan_ports
+# Purpose:     the port scan and its findings.
+# Entry:       $report is the host report.
+# Exit:        the scan result.
+# Side effects: TCP connections; adds findings; sets open_ports.
+sub _scan_ports :Private
+{
+	my ($self, $report) = @_;
+
+	my $scan = App::WebPerimeterScan::Ports->scan(
+		host    => $report->{host},
+		ports   => $self->{ports},
+		timeout => $self->{connect_timeout},
+	);
+	$report->{open_ports} = $scan->{open};
+	App::WebPerimeterScan::Checks::check_ports($self->{findings}, host => $report->{host}, scan => $scan);
+
+	return $scan;
+}
+
+# _tls_port
+# Purpose:     which port to inspect TLS on, if any.
+# Entry:       $base is the URL that answered; $scan the port scan.
+# Exit:        the base URL's port when it is HTTPS; otherwise the first
+#              open TLS port (443, then 8443); otherwise undef.
+# Side effects: none.
+#
+# Inspecting a port that answered the scan, rather than always 443, is the
+# fix for a host with only 8443 open being reported as tls-unavailable.  A
+# failed handshake on an open TLS port is still inspected: it is a finding.
+sub _tls_port :Private
+{
+	my ($self, $base, $scan) = @_;
+
+	my %open = map { $_->{port} => 1 } @{ $scan->{open} || [] };
+	my ($open_tls) = grep { $open{$_} } @TLS_PORTS;
+
+	return $base =~ $HTTPS_URL ? URI->new($base)->port : $open_tls;
+}
+
+# _inspect_tls
+# Purpose:     TLS inspection and its findings.
+# Entry:       $report has a base URL.
+# Exit:        $self.
+# Side effects: TLS handshakes; adds findings; sets $report->{tls}.
+sub _inspect_tls :Private
+{
+	my ($self, $report, $port_scan) = @_;
+
+	my $port = $self->_tls_port($report->{base}, $port_scan);
+	return $self unless $port;
+
+	my $tls = App::WebPerimeterScan::TLS->inspect(
+		host => $report->{host}, port => $port, timeout => $self->{connect_timeout},
+	);
+	$report->{tls} = $tls;
+	App::WebPerimeterScan::Checks::check_tls($self->{findings}, host => $report->{host}, tls => $tls);
+
+	return $self;
+}
+
+# _probe_same_origin
+# Purpose:     the CORS probe (a foreign Origin) and the OPTIONS probe.
+# Entry:       $report has a base URL.
+# Exit:        $self.
+# Side effects: two requests; adds findings; records both responses.
+sub _probe_same_origin :Private
+{
+	my ($self, $report) = @_;
+
+	my ($host, $base) = @{$report}{qw(host base)};
+	my $origin = App::WebPerimeterScan::Checks::probe_origin();
+
+	my $cors = $self->{http}->fetch($base, headers => [ "Origin: $origin" ]);
+	App::WebPerimeterScan::Checks::check_cors($self->{findings}, host => $host, url => $base, res => $cors);
+	$self->_keep_response($report, $base, 'GET', $cors, $self->i18n('scan.note.origin', { origin => $origin }));
+
+	my $options = $self->{http}->fetch($base, method => 'OPTIONS');
+	App::WebPerimeterScan::Checks::check_methods($self->{findings}, host => $host, url => $base, res => $options);
+	$self->_keep_response($report, $base, 'OPTIONS', $options);
+
+	return $self;
+}
+
+# _check_plaintext_hop
+# Purpose:     does plain HTTP redirect to HTTPS?  The first request a
+#              visitor makes is plaintext, and HSTS cannot protect it.
+# Entry:       $report's base is HTTPS on the default port.
+# Exit:        $self.
+# Side effects: one request; may add no-https-redirect.
+sub _check_plaintext_hop :Private
+{
+	my ($self, $report) = @_;
+
+	my $url = "http://$report->{host}/";
+	my $plain = $self->{http}->fetch($url);
+	$self->_keep_response($report, $url, 'GET', $plain, $self->i18n('scan.note.plaintext'));
+
+	# Port 80 closed is fine: there is no plaintext hop to protect.
+	return $self if $plain->{error} || _redirects_to_https($plain);
+
+	my $location = $self->{http}->header($plain, 'location') // '';
+	$self->_report('no-https-redirect', host => $report->{host}, vars => {
+		url      => $url,
+		status   => $plain->{status} // 0,
+		location => $location,
+		redirect => length $location ? 'elsewhere' : 'none',
+	});
+
+	return $self;
+}
+
+# _redirects_to_https
+# Purpose:     is this response a redirect to an https:// URL?
+# Entry:       $res is a successful fetch() result.
+# Exit:        1 or 0.
+# Side effects: none.
+sub _redirects_to_https :Private
+{
+	my ($res) = @_;
+
+	my $locations = $res->{headers}{location} || [];
+	my $location = @{$locations} ? $locations->[-1] : '';
+
+	return ($REDIRECT{ $res->{status} // 0 } && $location =~ $HTTPS_URL) ? 1 : 0;
+}
+
+# _crawl
+# Purpose:     check the site's own pages, breadth-first from the root,
+#              within depth and page budget.
+# Entry:       $root is the response already fetched for the base URL.
+# Exit:        $self.
+# Side effects: requests; adds findings; fills $report->{urls}.
+sub _crawl :Private
+{
+	my ($self, $report, $root) = @_;
+
+	my $base = $report->{base};
+	my @queue = ([ $base, 0 ]);
+	my %seen = ($base => 1);
+	my %allowed;	# host => 1/0, so each host is resolved once
+	my $fetched = 0;
+
+	while(@queue && $fetched < $self->{max_urls}) {
+		my ($url, $depth) = @{ shift @queue };
+
+		my $res = $url eq $base ? $root : $self->{http}->fetch($url);
+		next if $res->{error};
+
+		$fetched++;
+		push @{ $report->{urls} }, $url;
+		App::WebPerimeterScan::Checks::check_page($self->{findings}, host => $report->{host}, url => $url, res => $res);
+
+		next if $depth >= $self->{depth} || ($res->{content_type} // '') !~ $HTML_TYPE;
+
+		# allows(), not just covers(): a wildcard entry covers names nobody
+		# listed, and one resolving to an internal address must be refused.
+		for my $link (@{ $self->_links($res->{body}, $url) }) {
+			my $host = URI->new($link)->host;
+			next if $seen{$link}++ || !($allowed{$host} //= $self->{scope}->allows($host));
+			push @queue, [ $link, $depth + 1 ];
+		}
+	}
+
+	$self->_say('scan.progress.urls', { count => $fetched, host => $report->{host} });
+
+	return $self;
+}
+
+# _path_probes
+# Purpose:     the sensitive-path probes, against a not-found baseline.
+# Entry:       $report has a base URL.
+# Exit:        $self.
+# Side effects: requests; adds findings.
+sub _path_probes :Private
+{
+	my ($self, $report) = @_;
+
+	my ($host, $base) = @{$report}{qw(host base)};
+
+	# A path that certainly does not exist.  Its fingerprint tells us whether
+	# this application answers 200 for everything, in which case a 200 on
+	# /.git/config proves nothing.
+	my $path = '/ws-baseline-' . _random_token() . '.html';
+	my $miss = $self->{http}->fetch(($base =~ s{/+\z}{}r) . $path);
+
+	$self->_report('catch-all-200', host => $host, vars => { path => $path })
+		if !$miss->{error} && ($miss->{status} // 0) == $HTTP_OK;
+
+	App::WebPerimeterScan::Checks::check_paths($self->{findings},
+		http     => $self->{http},
+		host     => $host,
+		base     => $base,
+		baseline => App::WebPerimeterScan::Checks::fingerprint($miss),
+	);
+
+	return $self;
+}
+
+# _reflection_probe
+# Purpose:     opt-in: send one harmless marker in a query parameter and see
+#              whether it comes back unencoded.  A hint for a human, not a
+#              proof of cross-site scripting.
+# Entry:       $report has a base URL.
+# Exit:        $self.
+# Side effects: one request; may add reflected-input.
+sub _reflection_probe :Private
+{
+	my ($self, $report) = @_;
+
+	my $marker = 'wsp' . _random_token();
+	my $sent = "$REFLECTION_PARAMETER=$marker$REFLECTION_ENCODED";
+
+	my $uri = URI->new($report->{base});
+	$uri->query(join '&', grep { defined && length } $uri->query, $sent);
+
+	my $res = $self->{http}->fetch($uri->as_string);
+	my $reflected = !$res->{error} && index($res->{body} // '', $marker . $REFLECTION_RAW) >= 0;
+
+	$self->_report('reflected-input',
+		host => $report->{host}, url => $uri->as_string, vars => { parameter => $sent },
+	) if $reflected;
+
+	return $self;
+}
+
+# _source_pass
+# Purpose:     the source-aware pass.  A black-box scan can only say that a
+#              URL answered; given a docroot and a source tree it can also
+#              say which file is served and which line defines the endpoint.
+# Entry:       the scan has finished.
+# Exit:        $self.
+# Side effects: annotates findings; may add source-file-in-docroot.
+sub _source_pass :Private
+{
+	my ($self) = @_;
+
+	my $source = $self->{source};
+	return $self unless $source;
+
+	for my $finding (@{ $self->{findings}->all }) {
+		my $path = _url_path($finding->{url}) // next;
+		my $file  = $source->file_for($path);
+		my $route = $source->route_for($path);
+
+		$self->{findings}->annotate($finding,
+			($file  ? (file   => $file->{path}) : ()),
+			($route ? (source => "$route->{file}:$route->{line}") : ()),
+		);
+	}
+
+	return $self->_docroot_files($source);
+}
+
+# _docroot_files
+# Purpose:     sensitive files present under a docroot but not served.
+# Entry:       $source has docroots.
+# Exit:        $self.
+# Side effects: may add source-file-in-docroot, keyed on the file so
+#              several probes cannot repeat it.
+sub _docroot_files :Private
+{
+	my ($self, $source) = @_;
+
+	# Only the serious probes, and only those the wire did not already find.
+	my %served = map { $_->{id} => 1 } @{ $self->{findings}->all };
+	my @wanted = grep { $DOCROOT_SEVERITY{ $_->{severity} } && !$served{ $_->{id} } }
+		@{ App::WebPerimeterScan::Checks::sensitive_probes() };
+
+	for my $hit (@{ $source->sensitive_on_disk(\@wanted) }) {
+		$self->_report('source-file-in-docroot',
+			key      => $hit->{path},
+			severity => $DOCROOT_SEVERITY{ $hit->{probe}{severity} },
+			evidence => $hit->{path},
+			vars     => { file => $hit->{relative} },
+		);
+	}
+
+	return $self;
+}
+
+# _unvisited_routes
+# Purpose:     the routes in the source that the scan never requested: the
+#              coverage gap a link-following scan cannot see.
+# Entry:       $self->{source} is set; the crawl and probes are done.
+# Exit:        $self.
+# Side effects: may add source-routes-unvisited.
+sub _unvisited_routes :Private
+{
+	my ($self, $report) = @_;
+
+	my $visited = $self->_visited_paths($report);
+	my @unvisited = grep {
+		my $re = $_->{re};
+		!grep { $_ =~ $re } @{$visited};
+	} @{ $self->{source}->routes };
+	return $self unless @unvisited;
+
+	# The first few as evidence.  The slice stops at the end of the list: a
+	# slice past the end, aliased by map or grep, would extend the array.
+	my $limit = $self->{unvisited_evidence_limit};
+	my @shown = @unvisited > $limit ? @unvisited[0 .. $limit - 1] : @unvisited;
+
+	$self->_report('source-routes-unvisited',
+		host     => $report->{host},
+		evidence => join('; ', map { "$_->{file}:$_->{line} $_->{method} $_->{pattern}" } @shown),
+		vars     => { count => scalar @unvisited },
+	);
+
+	return $self;
+}
+
+# _visited_paths
+# Purpose:     every URL path the scan is known to have requested.
+# Entry:       $report is the host report.
+# Exit:        arrayref of distinct paths.
+# Side effects: none.
+#
+# Path probes are not part of the crawl, but a finding that names a URL
+# proves that URL was requested, so a route serving it is not a gap.
+sub _visited_paths :Private
+{
+	my ($self, $report) = @_;
+
+	my %visited = map { $_ => 1 } grep { defined }
+		map { _url_path($_) } @{ $report->{urls} }, map { $_->{url} } @{ $self->{findings}->all };
+
+	return [ keys %visited ];
+}
+
+# _url_path
+# Purpose:     the path of a URL.
+# Entry:       $url may be undef or empty.
+# Exit:        a non-empty path, or undef.
+# Side effects: none.
+sub _url_path :Private
+{
+	my ($url) = @_;
+
+	my $uri = (defined $url && length $url) ? eval { URI->new($url) } : undef;
+	my $path = ($uri && $uri->can('path')) ? $uri->path : undef;
+
+	return (defined $path && length $path) ? $path : undef;
+}
+
+# _root_candidates
+# Purpose:     the root URLs to try for a scope entry, in order.
+# Entry:       $entry is a concrete scope entry.
+# Exit:        arrayref of URLs.
+# Side effects: none.
+sub _root_candidates :Private
+{
+	my ($self, $entry) = @_;
+
+	my ($host, $port, $scheme) = @{$entry}{qw(host port scheme)};
+
+	# An explicit port implies its scheme unless one was given; with
+	# neither, HTTPS is tried first and HTTP second.
+	$scheme //= $TLS_PORT{$port} ? 'https' : 'http' if $port;
+	my $authority = $port ? "$host:$port" : $host;
+
+	return [ map { "$_://$authority/" } $scheme ? ($scheme) : qw(https http) ];
+}
+
+# _fetch_root
+# Purpose:     the first root URL that answers.
+# Entry:       $entry is a concrete scope entry.
+# Exit:        [base URL, response], or undef if none answered.
+# Side effects: requests.
+sub _fetch_root :Private
+{
+	my ($self, $entry) = @_;
+
+	for my $base (@{ $self->_root_candidates($entry) }) {
+		my $res = $self->{http}->fetch($base);
+		return [ $base, $res ] unless $res->{error};
+	}
+
+	return undef;
+}
+
+# _links
+# Purpose:     the crawlable links on a page.
+# Entry:       $body is HTML; $base is the page URL.
+# Exit:        arrayref of absolute http(s) URLs without fragments, assets
+#              skipped, at most max_links_per_page.
+# Side effects: none.
+sub _links :Private
+{
+	my ($self, $body, $base) = @_;
+
+	my $extor = (defined $body && length $body) ? eval { HTML::SimpleLinkExtor->new($base) } : undef;
+	return [] unless $extor && eval { $extor->parse($body); 1 };
+
+	my (@links, %seen);
+	for my $found ($extor->links) {
+		my $uri = eval { URI->new_abs($found, $base) } or next;
+		next unless $WEB_SCHEME{ lc($uri->scheme // '') };
+
+		$uri->fragment(undef);
+		my ($extension) = ($uri->path // '') =~ /\.([A-Za-z0-9]+)\z/;
+		next if defined $extension && $SKIP_EXTENSION{ lc $extension };
+
+		my $string = $uri->as_string;
+		next if $seen{$string}++;
+		push @links, $string;
+		last if @links >= $self->{max_links_per_page};
+	}
+
+	return \@links;
+}
+
+# _random_token
+# Purpose:     a short random string for probe paths and markers.
+# Entry:       none.
+# Exit:        token_length characters of [a-z0-9].
+# Side effects: consumes rand().  Not cryptographic: it only has to be
+#              unlikely to exist on the server.
+sub _random_token :Private
+{
+	return join '', map { $TOKEN_CHARS[ int rand @TOKEN_CHARS ] } 1 .. $config{token_length};
+}
+
+1;
+
+__END__
+
+=head1 LIMITATIONS
+
+These are the design weaknesses a reviewer should know about before relying
+on a clean report.  Each is a reason the tool can miss something, or report
+something that is not there.
+
+=over 4
+
+=item * B<A clean report is not a clean site.>  The checks are passive and
+unauthenticated: no form is submitted, no login is attempted and no
+parameter other than the opt-in reflection marker is altered.  Anything
+behind a login, or reachable only by a POST, is outside what this tool can
+see.
+
+=item * B<DNS can change between the check and the request.>  The scope is
+checked against the name, and each connection resolves the name again, so a
+name that resolves to a public address for the check and a private one for
+the request (DNS rebinding) defeats C<--allow-private>.  The complete fix is
+to resolve once and connect to that address, carrying the name in SNI and
+the C<Host> header; the HTTP, TLS and port layers would all need to take an
+address.
+
+=item * B<IPv4 only for the port scan.>  The private-address check
+considers IPv6 addresses, but the port scan connects over IPv4 only.
+
+=item * B<The crawl follows links, not the application.>  Script-built
+navigation, forms and API calls are not followed.  C<--source> mitigates
+this by listing the routes the crawl never reached, but only for
+Mojolicious-style route declarations.
+
+=item * B<Header rules are host-wide.>  A missing header is reported once
+per host, with the first page that lacked it as evidence.  A site whose
+pages differ in policy shows only the first gap.
+
+=item * B<Multiple CSP headers are read as one policy.>  Browsers apply each
+policy separately, so a strict second policy can make a lax first one safe;
+the lax one is still reported.
+
+=item * B<Version rules trust banners.>  PHP2Shell and the OpenSSH check use
+the version the server announces.  Back-ported fixes (as distributions
+ship) are reported as vulnerable; a hidden or faked banner is not reported
+at all.
+
+=item * B<Path probes are a fixed list.>  Eighteen well-known files are
+requested; a secret under any other name is only found by C<--docroot>.
+
+=item * B<Only English is catalogued.>  The message layer is ready for
+other languages (see L<App::WebPerimeterScan::I18N>), but none ships.
+
+=item * B<Perl 5.14 is required> because L<Sub::Private> needs it.  Before
+the access controls were added the code ran on 5.10.
+
+=back
 
 =head1 LICENSE
 

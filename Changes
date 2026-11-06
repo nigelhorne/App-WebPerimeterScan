@@ -22,14 +22,48 @@ Revision history for App-WebPerimeterScan
 	  audited without repeating the requests; the page, the plaintext hop and
 	  the CORS and OPTIONS probes are all kept
 
-	- Declare MIN_PERL_VERSION 5.010, the floor the syntax actually needs
-	  (the defined-or operator is used throughout); every prerequisite
-	  supports it
+	- Every message, warning and error comes from one catalogue
+	  (App::WebPerimeterScan::Messages) with placeholders, sprintf formats
+	  and plural and select forms, chosen by LANGUAGE, LC_ALL, LC_MESSAGES
+	  or LANG; English is the only language so far
+	- --format now has the short form -f, as documented
+	- --fail-on, --format, --ports, --docroot and --source are validated
+	  before any traffic is sent, not after the scan
+	- A host the scanner refused or could not finish is reported as a
+	  high-severity scan-error, so --fail-on high exits non-zero
+	- Declare MIN_PERL_VERSION 5.014, which Sub::Private requires
 	- Require Net::SSLeay 1.92, which compiles against OpenSSL 3 where 1.46
 	  cannot, and lower the IO::Select and IO::Socket::INET floors to 1.17
 	  and 1.31, the versions the suite is actually tested against
 
 	[ Bug Fixes ]
+	- Classify private addresses correctly: 192.0.0.0/8 and 223.0.0.0/8 were
+	  treated as private, while multicast, TEST-NET, benchmarking and IPv6
+	  private ranges were not; every address a name resolves to is checked,
+	  not only the first
+	- Refuse private targets reached by following links through a wildcard
+	  scope entry, which bypassed --allow-private
+	- Run the HTTP-to-HTTPS check for scope entries given as https:// URLs
+	- Detect TLS 1.0 and 1.1 on OpenSSL 3, whose default security level
+	  refused the probe handshakes so legacy protocols were never reported
+	- Report a server that speaks only legacy TLS instead of skipping it
+	- Inspect TLS on 8443 when that is the only TLS port open, not on 443
+	- Accept a 307 redirect to HTTPS
+	- csp-wildcard no longer fires on host wildcards such as
+	  https://*.example.com; csp-unsafe judges only script-src and
+	  default-src and honours nonces, hashes and strict-dynamic
+	- Mixed content: link rel=canonical and similar are not resources,
+	  and a stylesheet is active, not passive, content
+	- An HTTP connection failure no longer reports the TLS error of an
+	  earlier connection
+	- Keep the value of a header with white space before its colon
+	- Escape the generated time and version in the HTML report
+	- Send the real release in the User-Agent, not 0.01
+	- Count robots.txt Disallow lines and unvisited routes correctly; a
+	  slice past the end of the list padded the count
+	- Index only route definitions whose pattern starts with / in --source
+	- Correct the clean target in Makefile.PL, which named the wrong
+	  directory
 	- Confirm the connection in the serial port scan instead of trusting
 	  IO::Socket::INET, which returns a socket whose connect is still in
 	  progress; on macOS every refused port was reported open

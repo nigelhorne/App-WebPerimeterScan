@@ -16,7 +16,7 @@ Version 0.001.0
     my $scanner = App::WebPerimeterScan->new(scope => $scope, depth => 1);
     my $findings = $scanner->run;
 
-    print $_->{severity}, ' ', $_->{title}, "\n" for $findings->sorted;
+    print "$_->{severity} $_->{title}\n" for @{ $findings->sorted };
 ```
 
 ## Description
@@ -34,21 +34,25 @@ injection, no credential guessing and no write request outside the single
 regenerate, rather than editing the README by hand.
 
 The scope file is the authorisation boundary: a host that does not appear in
-it is never contacted, including hosts discovered by following links.
+it is never contacted, including hosts discovered by following links, and a
+host that resolves into private address space is refused unless
+`--allow-private` is given.
+
+Every message the tool prints comes from a catalogue
+([App::WebPerimeterScan::Messages](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AMessages)), so the text can be translated without
+touching the code; see [App::WebPerimeterScan::I18N](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AI18N).
 
 ## Requirements
 
-Perl 5.10.0 or later, with the modules listed in `Makefile.PL`.  The minimum
-Perl was measured with [Perl::MinimumVersion](https://metacpan.org/pod/Perl%3A%3AMinimumVersion) rather than guessed, and the
-suite is run against 5.10.1 as well as current perls.  `cpan` installs
-anything that is missing, so these floors matter mainly on a machine that
-already has older copies of them:
+Perl 5.14.0 or later, with the modules listed in `Makefile.PL`.  The floor
+is set by [Sub::Private](https://metacpan.org/pod/Sub%3A%3APrivate), which needs `${^GLOBAL_PHASE}`; everything else
+would run on 5.10.  `cpan` installs anything that is missing, so these
+floors matter mainly on a machine that already has older copies of them:
 
 - `Socket` 2.020
 
-    The core of Perl 5.10.1 ships 2.018, so this is a real installation step on
-    the minimum Perl.  The port scan reads `SO_ERROR` from it to tell a refused
-    connection from an open one.
+    The port scan reads `SO_ERROR` from it to tell a refused connection from an
+    open one, and the private-address check uses its `getaddrinfo`.
 
 - `Net::SSLeay` 1.92
 
@@ -58,20 +62,31 @@ already has older copies of them:
 - `IO::Socket::SSL` 2.000
 - `IO::Select` 1.17 and `IO::Socket::INET` 1.31
 
-    The versions that ship with Perl 5.10.1, so the minimum Perl needs no
-    upgrade here.  They are stated because the port scan relies on how they
-    behave, not only on what they provide.
+    They are stated because the port scan relies on how they behave, not only
+    on what they provide.
+
+- `Sub::Private` 0.09 and `Sub::Protected` 0.03
+
+    Every internal routine is wrapped so that a call from outside its package
+    croaks.  Tests run under `prove` are exempt (`HARNESS_ACTIVE`).
+
+- `Params::Get` 0.17 and `Params::Validate::Strict` 0.41
+
+    Every public routine validates its arguments against the schema in its
+    documentation.
+
+- `Data::Validate::IP` 0.31
+
+    Classifies resolved addresses against the IANA special-purpose registries.
 
 Both SSL modules need the OpenSSL headers at install time, which the
 installer cannot supply for you; install your distribution's `openssl`
 development package first if the build fails.
 
-The remaining prerequisites are `Getopt::Long` 2.50,
-`HTML::SimpleLinkExtor` 1.20, `JSON::PP` 4.00, `Time::HiRes` 1.97,
-`Time::Local` 1.28 and `URI` 1.70, plus `Test::More` 1.302 for the test
-suite.  Several of these are newer than the copies that ship with Perl 5.10,
-so on the minimum Perl let the installer upgrade them instead of pinning the
-core versions.
+The remaining prerequisites are `autodie` with `IPC::System::Simple`,
+`Getopt::Long` 2.50, `HTML::Parser` 3.71, `HTML::SimpleLinkExtor` 1.20,
+`JSON::PP` 4.00, `Readonly` 2.05, `Time::HiRes` 1.97 and `URI` 1.70, plus
+`Test::More` 1.302 for the test suite.
 
 ## Usage
 
@@ -130,7 +145,7 @@ finding - means the scan is broken, not the site.
 
 ## Example
 
-A real run against a local application, with its source tree supplied so the
+A run against a local application, with its source tree supplied so the
 report can name the endpoints it never reached.  The output is trimmed in the
 middle for length.
 
@@ -150,27 +165,30 @@ middle for length.
       URLs scanned: 6
 
 
-    LOW (2)
+    LOW (1)
     -------
-    [csp-unsafe] Content-Security-Policy permits unsafe-inline or unsafe-eval
-      Evidence: default-src 'self'; script-src 'self' 'nonce-...' https://cdnjs.cloudflare.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; [...]
-
     [port-open-3000] Port 3000 accepts connections from outside the host
       Evidence: TCP connect succeeded, no banner
 
 
     INFO (1)
     --------
-    [source-routes-unvisited] 71 endpoint(s) defined in source were not scanned
+    [source-routes-unvisited] 71 endpoints defined in source were not scanned
       Evidence: ~/src/njh/Database-BI/lib/Database/BI.pm:2713 GET /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2714 POST /login; ~/src/njh/Database-BI/lib/Database/BI.pm:2715 POST /logout; [...]
       Fix: Name them explicitly, raise --max-urls, or review them by hand.
 
-    Summary: 0 critical, 0 high, 0 medium, 2 low, 1 info
+    Summary: 0 critical, 0 high, 0 medium, 1 low, 1 info
 ```
 
-`--allow-private` is required for a loopback or RFC1918 target; without it the
-host is refused before any traffic is sent.  The exit status is 0 here because
-`--fail-on` defaults to `high` and nothing reached it.
+That application sends `style-src 'self' 'unsafe-inline'` with a
+nonce-based `script-src`.  Only the script sources are judged, so the
+inline-style allowance is not reported as a cross-site scripting gap.
+
+`--allow-private` is required for a loopback or private target; without it
+the host is refused before any traffic is sent, and the refusal is reported
+as a high-severity `scan-error` so the exit status shows that nothing was
+scanned.  The exit status is 0 here because `--fail-on` defaults to
+`high` and nothing reached it.
 
 `--no-path-probes` skips the well-known sensitive path checks, which ask
 whether a deployed document root exposes files such as `/.git/config`.  The
@@ -212,6 +230,381 @@ A header appears once per value, so a second `Content-Security-Policy` or
 `Set-Cookie` is not lost.  `raw` is the block exactly as it arrived.
 `responses` holds the same structure for the CORS and `OPTIONS` probes, which
 is where the CORS and method findings come from.
+
+## Subroutines/Methods
+
+### New
+
+Purpose: configure a scan.
+
+Args: named, all optional except that `run` needs `scope`:
+
+```
+    scope            an App::WebPerimeterScan::Scope (or anything with
+                     hosts, covers, allows and assert_target_allowed)
+    timeout          seconds per HTTP request (10)
+    connect_timeout  seconds for port and TLS handshakes (3)
+    delay            seconds between requests to one host (0.5)
+    depth            link-following depth from each root URL (1)
+    max_urls         pages crawled per host (40)
+    max_size         bytes of each response body kept (2000000)
+    path_probes      request the well-known sensitive paths (1)
+    reflection       send the reflected-input marker (0)
+    verbose          progress on STDERR (0)
+    ports            array reference of TCP ports (the Ports default list)
+    docroots         array reference of document roots on this machine
+    source_dirs      array reference of source trees on this machine
+```
+
+Defaults come from `%App::WebPerimeterScan::config`.
+
+Returns: the new object.
+
+Side Effects: none; no traffic is sent until `run`.
+
+Usage: `my $scanner = App::WebPerimeterScan->new(scope => $scope);`
+
+#### Example
+
+```perl
+    my $scanner = App::WebPerimeterScan->new(
+            scope       => $scope,
+            ports       => [ 80, 443 ],
+            max_urls    => 1,
+            path_probes => 0,
+            source_dirs => [ "$ENV{HOME}/src/my-app" ],
+    );
+```
+
+#### Api Specification
+
+##### Input
+
+```perl
+    {
+            scope           => { type => 'object', can => [qw(hosts covers allows assert_target_allowed)], optional => 1 },
+            timeout         => { type => 'number', min => 0, optional => 1 },
+            connect_timeout => { type => 'number', min => 0, optional => 1 },
+            delay           => { type => 'number', min => 0, optional => 1 },
+            depth           => { type => 'integer', min => 0, optional => 1 },
+            max_urls        => { type => 'integer', min => 1, optional => 1 },
+            max_size        => { type => 'integer', min => 1, optional => 1 },
+            path_probes     => { type => 'boolean', optional => 1 },
+            reflection      => { type => 'boolean', optional => 1 },
+            verbose         => { type => 'boolean', optional => 1 },
+            ports           => { type => 'arrayref', element_type => 'integer', optional => 1 },
+            docroots        => { type => 'arrayref', optional => 1 },
+            source_dirs     => { type => 'arrayref', optional => 1 },
+    }
+```
+
+##### Output
+
+```perl
+    { type => 'object', isa => 'App::WebPerimeterScan' }
+```
+
+#### Messages
+
+```perl
+    Message                                   Meaning / resolution
+    ----------------------------------------  ------------------------------
+    Unknown parameter 'X' (fatal)             A misspelt argument name.
+    Parameter 'X' ... must be ... (fatal)     A value of the wrong type or
+                                              out of range, e.g. depth => -1.
+    Parameter 'scope' must be an object that  Pass an App::WebPerimeterScan::
+    understands the ... method (fatal)        Scope.
+```
+
+#### Formal Specification
+
+```
+    ┌─ InitScanner ───────────────────────────────────────
+    │ Scanner'; args? : NAME ⇸ VALUE
+    ├─────────────────────────────────────────────────────
+    │ dom args? ⊆ dom config
+    │ ∀ k ∈ dom config • setting'(k) = (config ⊕ args?)(k)
+    │ findings' = ∅ ∧ hosts' = ∅
+    │ source' ≠ ⊥ ⇔ docroots? ≠ ⟨⟩ ∨ source_dirs? ≠ ⟨⟩
+    └─────────────────────────────────────────────────────
+```
+
+#### Pseudocode
+
+```
+    validate the arguments
+    overlay them on %config
+    create the findings collector and the HTTP client
+    create the source index if any docroot or source tree was given
+```
+
+### Findings
+
+Purpose: the findings collector the scan writes to.
+
+Args: none.
+
+Returns: an [App::WebPerimeterScan::Findings](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AFindings).
+
+Side Effects: none.
+
+Usage: `my $count = $scanner->findings->count;`
+
+#### Example
+
+```
+    $scanner->run;
+    printf "%d finding(s)\n", $scanner->findings->count;
+```
+
+#### Api Specification
+
+##### Input
+
+```
+    {}
+```
+
+##### Output
+
+```perl
+    { type => 'object', isa => 'App::WebPerimeterScan::Findings' }
+```
+
+#### Messages
+
+None.
+
+#### Formal Specification
+
+```
+    ┌─ FindingsOf ────────────────────────────────────────
+    │ ΞScanner; result! : FINDINGS
+    ├─────────────────────────────────────────────────────
+    │ result! = findings
+    └─────────────────────────────────────────────────────
+```
+
+### Http
+
+Purpose: the HTTP client, for its request count or to make further
+requests under the same throttle.
+
+Args: none.
+
+Returns: an [App::WebPerimeterScan::HTTP](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AHTTP).
+
+Side Effects: none.
+
+Usage: `printf "Requests: %d\n", $scanner->http->requests;`
+
+#### Example
+
+```
+    $scanner->run;
+    print $scanner->http->requests, " requests sent\n";
+```
+
+#### Api Specification
+
+##### Input
+
+```
+    {}
+```
+
+##### Output
+
+```perl
+    { type => 'object', isa => 'App::WebPerimeterScan::HTTP' }
+```
+
+#### Messages
+
+None.
+
+#### Formal Specification
+
+```
+    ┌─ HttpOf ────────────────────────────────────────────
+    │ ΞScanner; result! : HTTP
+    ├─────────────────────────────────────────────────────
+    │ result! = http
+    └─────────────────────────────────────────────────────
+```
+
+### Host\_Reports
+
+Purpose: what the scan learned about each host, for the report formats.
+
+Args: none.
+
+Returns: an array reference, sorted by host, of hash references with
+`host`, `entry` (the scope entry), `urls` (pages crawled),
+`open_ports`, `base` (the root URL that answered), `tls` (the
+["inspect" in App::WebPerimeterScan::TLS](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3ATLS#inspect) result, when TLS was inspected),
+`response` (the main page's header block) and `responses` (the probes'
+header blocks).  See ["REPORT FORMAT"](#report-format).
+
+Side Effects: none.
+
+Usage: `my $hosts = $scanner->host_reports;`
+
+#### Example
+
+```perl
+    for my $host (@{ $scanner->host_reports }) {
+            printf "%s: %d page(s)\n", $host->{host}, scalar @{ $host->{urls} };
+    }
+```
+
+#### Api Specification
+
+##### Input
+
+```
+    {}
+```
+
+##### Output
+
+```perl
+    { type => 'arrayref', element_type => 'hashref' }
+```
+
+#### Messages
+
+None.
+
+#### Formal Specification
+
+```
+    ┌─ HostReports ───────────────────────────────────────
+    │ ΞScanner; result! : seq HOSTREPORT
+    ├─────────────────────────────────────────────────────
+    │ ran result! = ran hosts
+    │ ∀ i : 1 .. #result! − 1 • result!(i).host < result!(i + 1).host
+    └─────────────────────────────────────────────────────
+```
+
+### Run
+
+Purpose: scan every concrete host in the scope.
+
+Args: none.
+
+Returns: the [App::WebPerimeterScan::Findings](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AFindings) collector.
+
+Side Effects: network traffic to the hosts in scope, and only to them.  A
+host that cannot be scanned (refused by the scope, or an unexpected error)
+becomes a high-severity `scan-error` finding rather than stopping the run,
+so the other hosts are still scanned and the exit status shows the gap.
+
+Usage: `my $findings = $scanner->run;`
+
+#### Example
+
+```perl
+    my $findings = App::WebPerimeterScan->new(scope => $scope)->run;
+    exit(@{ $findings->at_or_above('high') } ? 1 : 0);
+```
+
+#### Api Specification
+
+##### Input
+
+```
+    {}
+```
+
+##### Output
+
+```perl
+    { type => 'object', isa => 'App::WebPerimeterScan::Findings' }
+```
+
+#### Messages
+
+```perl
+    Message                                     Meaning / resolution
+    ------------------------------------------  ------------------------------
+    No scope was given; a scan needs one        Pass scope => ... to new().
+    before it can send any traffic (fatal)
+    No concrete hosts in scope (only            The scope file lists only
+    wildcards?) (fatal)                         *.domain lines; add a host.
+```
+
+#### Formal Specification
+
+```
+    ┌─ Run ───────────────────────────────────────────────
+    │ ΔScanner; result! : FINDINGS
+    ├─────────────────────────────────────────────────────
+    │ scope ≠ ⊥ ∧ hosts(scope) ≠ ⟨⟩
+    │ contacted' ⊆ { h | allows(scope, h) }
+    │ ∀ e ∈ ran hosts(scope) •
+    │     scanned(e) ∨ (scan-error, e.host) ∈ keys(findings')
+    │ result! = findings'
+    └─────────────────────────────────────────────────────
+```
+
+#### Pseudocode
+
+```
+    croak without a scope or without concrete hosts
+    for each host in scope
+            refuse it if it is out of scope or private (and not allowed)
+            port scan; fetch the root over HTTPS then HTTP
+            inspect TLS where it is served
+            send the CORS, OPTIONS and plaintext-redirect probes
+            crawl same-scope links breadth-first within depth and budget
+            probe the well-known sensitive paths against a not-found baseline
+            optionally send the reflection marker
+            list source routes the crawl never reached
+            on any error, record a scan-error finding and go on
+    map findings to files and source lines; report sensitive files on disk
+```
+
+## Limitations
+
+These are the design weaknesses a reviewer should know about before relying
+on a clean report.  Each is a reason the tool can miss something, or report
+something that is not there.
+
+- **A clean report is not a clean site.**  The checks are passive and
+unauthenticated: no form is submitted, no login is attempted and no
+parameter other than the opt-in reflection marker is altered.  Anything
+behind a login, or reachable only by a POST, is outside what this tool can
+see.
+- **DNS can change between the check and the request.**  The scope is
+checked against the name, and each connection resolves the name again, so a
+name that resolves to a public address for the check and a private one for
+the request (DNS rebinding) defeats `--allow-private`.  The complete fix is
+to resolve once and connect to that address, carrying the name in SNI and
+the `Host` header; the HTTP, TLS and port layers would all need to take an
+address.
+- **IPv4 only for the port scan.**  The private-address check
+considers IPv6 addresses, but the port scan connects over IPv4 only.
+- **The crawl follows links, not the application.**  Script-built
+navigation, forms and API calls are not followed.  `--source` mitigates
+this by listing the routes the crawl never reached, but only for
+Mojolicious-style route declarations.
+- **Header rules are host-wide.**  A missing header is reported once
+per host, with the first page that lacked it as evidence.  A site whose
+pages differ in policy shows only the first gap.
+- **Multiple CSP headers are read as one policy.**  Browsers apply each
+policy separately, so a strict second policy can make a lax first one safe;
+the lax one is still reported.
+- **Version rules trust banners.**  PHP2Shell and the OpenSSH check use
+the version the server announces.  Back-ported fixes (as distributions
+ship) are reported as vulnerable; a hidden or faked banner is not reported
+at all.
+- **Path probes are a fixed list.**  Eighteen well-known files are
+requested; a secret under any other name is only found by `--docroot`.
+- **Only English is catalogued.**  The message layer is ready for
+other languages (see [App::WebPerimeterScan::I18N](https://metacpan.org/pod/App%3A%3AWebPerimeterScan%3A%3AI18N)), but none ships.
+- **Perl 5.14 is required** because [Sub::Private](https://metacpan.org/pod/Sub%3A%3APrivate) needs it.  Before
+the access controls were added the code ran on 5.10.
 
 ## License
 

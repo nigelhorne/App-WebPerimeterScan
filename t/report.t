@@ -11,6 +11,9 @@ use App::WebPerimeterScan;
 use App::WebPerimeterScan::Findings;
 use App::WebPerimeterScan::Report;
 
+# White-box: _record_response is private, and this test calls it directly.
+$Sub::Private::BYPASS = 1;
+
 my $findings = App::WebPerimeterScan::Findings->new;
 
 $findings->add(
@@ -39,16 +42,17 @@ is($findings->add(id => 'medium-thing', severity => 'medium',
 	title => 'A medium thing'), 0, 'duplicate suppressed');
 is($findings->count, 3, 'duplicate did not increase the count');
 
-my @sorted = $findings->sorted;
-is($sorted[0]{severity}, 'critical', 'worst finding sorts first');
-is($sorted[-1]{severity}, 'low', 'least severe sorts last');
+my $sorted = $findings->sorted;
+is($sorted->[0]{severity}, 'critical', 'worst finding sorts first');
+is($sorted->[-1]{severity}, 'low', 'least severe sorts last');
 
 my $counts = $findings->counts;
 is($counts->{critical}, 1, 'critical counted');
 is($counts->{info}, 0, 'unused severity counted as zero');
 
-is(scalar($findings->at_or_above('high')), 1, 'one finding at or above high');
-is(scalar($findings->at_or_above('info')), 3, 'all findings at or above info');
+is(scalar @{ $findings->at_or_above('high') }, 1, 'one finding at or above high');
+is(scalar @{ $findings->at_or_above('info') }, 3, 'all findings at or above info');
+is_deeply($findings->at_or_above('bogus'), [], 'an unknown threshold matches nothing');
 
 my %meta = (
 	version      => '0.01',
@@ -119,5 +123,57 @@ is_deeply($record->{headers}{'set-cookie'}, [ 'a=1', 'b=2' ],
 is($record->{raw}, 'HTTP/1.1 200 OK', 'raw header block is kept verbatim');
 is($scanner->_record_response('https://example.org/', 'GET', { error => 'connect failed' }),
 	undef, 'a failed request is not recorded');
+
+# Every value in the HTML is escaped, the metadata included.
+my $hostile = App::WebPerimeterScan::Report::as_html($findings, %meta,
+	generated => '<script>x</script>', version => '"><b>');
+unlike($hostile, qr/<script>x<\/script>/, 'the generated time is escaped in the title and header');
+unlike($hostile, qr/"><b>/, 'the version is escaped');
+
+my $plain = App::WebPerimeterScan::Report::as_text($findings, %meta, color => 0);
+unlike($plain, qr/\e\[/, 'color => 0 gives plain text');
+my $colored = App::WebPerimeterScan::Report::as_text($findings, %meta, color => 1);
+like($colored, qr/\e\[/, 'color => 1 gives ANSI colour');
+
+like(App::WebPerimeterScan::Report::as_text($findings, %meta, hosts => [ {
+	host => 'tls.example', urls => [], open_ports => [],
+	tls => { ok => 1, protocol => 'TLSv1_3', cipher => 'X', not_after => 'Dec 25 2026', days_left => 1 },
+} ]), qr/expires Dec 25 2026 \(1 day\)/, 'TLS expiry is singular for one day');
+
+ok(!eval { App::WebPerimeterScan::Report::as_json($findings, bogus => 1); 1 }, 'an unknown metadata key is refused');
+
+# Findings: the API added in the refactor.
+{
+	my $f = App::WebPerimeterScan::Findings->new;
+	my @warnings;
+	local $SIG{__WARN__} = sub { push @warnings, @_ };
+	$f->add(id => 'typo', severity => 'crtical');
+	is($f->all->[0]{severity}, 'info', 'an unknown severity is recorded as info');
+	like($warnings[0] // '', qr/Unknown severity 'crtical'/, '... with a warning');
+
+	is($f->report('csp-missing', severity => 'medium', host => 'h', vars => { url => 'https://h/' }), 1,
+		'report() records a catalogued rule');
+	my ($csp) = grep { $_->{id} eq 'csp-missing' } @{ $f->all };
+	is($csp->{title}, 'Content-Security-Policy is missing', 'the title comes from the catalogue');
+	is($csp->{evidence}, 'No Content-Security-Policy header on https://h/', 'the evidence template is filled in');
+
+	$f->report('x', message => 'csp-missing', rule => { severity => 'low', reference => 'R' });
+	my ($x) = grep { $_->{id} eq 'x' } @{ $f->all };
+	is($x->{severity}, 'low', 'the rule supplies the severity');
+	is($x->{reference}, 'R', 'the rule supplies the reference');
+
+	is($f->annotate($csp, file => '/srv/x'), $f, 'annotate() returns the collection');
+	is($csp->{file}, '/srv/x', 'annotate() sets the file');
+	ok(!eval { $f->annotate({ %{$csp} }, file => 'y'); 1 }, 'a copy of a finding is refused');
+	ok(!eval { $f->annotate($csp, title => 'y'); 1 }, 'only file and source can be annotated');
+
+	is(App::WebPerimeterScan::Findings::rank('critical'), 5, 'rank of critical');
+	is(App::WebPerimeterScan::Findings::rank('nope'), 0, 'rank of an unknown severity');
+	is(App::WebPerimeterScan::Findings::rank(undef), 0, 'rank of undef');
+
+	push @{ $f->all }, 'junk';
+	ok(!(grep { !ref } @{ $f->all }), 'all() returns a copy of the list');
+	ok(!eval { App::WebPerimeterScan::Findings->new(bogus => 1); 1 }, 'new() takes no arguments');
+}
 
 done_testing();
