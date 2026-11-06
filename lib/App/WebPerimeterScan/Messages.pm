@@ -200,7 +200,7 @@ Usage: webperimeter --scope FILE [options]
       --reflection-probe  Send one marker parameter to test output encoding
       --allow-private     Permit loopback and private targets (staging, tests)
       --fail-on LEVEL     Exit 1 at or above this severity (default high)
-      --no-color          Disable ANSI colour in text output
+      --no-color          Disable ANSI colour in text output (or --no-colour)
   -v, --verbose           Progress on stderr
   -h, --help              This message
   -V, --version           Print the version

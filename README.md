@@ -214,7 +214,7 @@ report can name the endpoints it never reached.  The output is trimmed in the
 middle for length.
 
 ```
-    $ printf 'localhost:3000\n' > scope.txt
+    $ echo localhost:3000 > scope.txt
     $ bin/webperimeter --scope scope.txt --authorized --allow-private --ports 3000 \
         --source ~/src/njh/Database-BI --no-path-probes --max-urls 6 --delay 0.2 --no-color
 

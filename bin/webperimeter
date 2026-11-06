@@ -66,7 +66,7 @@ GetOptions(
 	'allow-private'         => \$opt{allow_private},
 	'dry-run'               => \$opt{dry_run},
 	'fail-on=s'             => \$opt{fail_on},
-	'color!'                => \$opt{color},
+	'color|colour!'         => \$opt{color},	# either spelling, and --no-colour
 	'verbose|v'             => \$opt{verbose},
 	'help|h'                => \$opt{help},
 	'version|V'             => \$opt{version},
@@ -314,8 +314,8 @@ to the file and "Report written to FILE" goes to STDOUT (not with
 C<--verbose>).
 
 =item * B<Colour is automatic.>  The text report is coloured when STDOUT is
-a terminal and C<-o> is not given.  Use C<--no-color> to turn it off, or
-C<--color> to force it.
+a terminal and C<-o> is not given.  Use C<--no-color> (or C<--no-colour>)
+to turn it off, or C<--color> (or C<--colour>) to force it.
 
 =item * B<Private addresses need C<--allow-private>.>  Without it, a host
 that resolves to C<127.0.0.1>, C<10.0.0.0/8> and the like is refused, and

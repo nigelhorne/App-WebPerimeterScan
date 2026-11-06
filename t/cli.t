@@ -122,6 +122,16 @@ SKIP: {
 		like($r->{out}, qr/csp-missing|Content-Security-Policy/, 'text output names the finding');
 		unlike($r->{out}, qr/\e\[/, '--no-color writes no escape codes');
 
+		# The British spelling is accepted for both forms of the option.
+		$r = run_cli(@scan, '--fail-on', 'never', '--no-colour');
+		is($r->{status}, 0, '--no-colour is accepted');
+		unlike($r->{out}, qr/\e\[/, '... and writes no escape codes');
+
+		# Standard output is a pipe here, so colour appears only if forced.
+		$r = run_cli(@scan, '--fail-on', 'never', '--colour');
+		is($r->{status}, 0, '--colour is accepted');
+		like($r->{out}, qr/\e\[/, '... and forces colour even into a pipe');
+
 		my $file = "$TMP/report.html";
 		$r = run_cli(@scan, '-f', 'html', '-o', $file, '--fail-on', 'never');
 		is($r->{status}, 0, '--output exits 0');
