@@ -10,17 +10,17 @@ requires 'Encode';
 requires 'Errno';
 requires 'Fcntl';
 requires 'Getopt::Long', '2.50';
-requires 'HTML::Parser', '3.71';
+requires 'HTML::Parser', '3.71';   # also provides HTML::Entities
 requires 'HTML::SimpleLinkExtor', '1.20';
-requires 'IPC::System::Simple', '1.30';
 requires 'IO::Select', '1.17';
 requires 'IO::Socket::INET', '1.31';
 requires 'IO::Socket::SSL', '2.000';
+requires 'IPC::System::Simple', '1.30';   # autodie :all needs it for system()
 requires 'JSON::PP', '4.00';
 requires 'Net::SSLeay', '1.92';
+requires 'POSIX';
 requires 'Params::Get', '0.17';
 requires 'Params::Validate::Strict', '0.41';
-requires 'POSIX';
 requires 'Readonly', '2.05';
 requires 'Scalar::Util';
 requires 'Socket', '2.020';
