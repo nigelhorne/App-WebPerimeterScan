@@ -44,16 +44,66 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
-	my $scope = App::WebPerimeterScan::Scope->new(allow_private => 0);
+Load a scope file and stop at once if a host may not be scanned:
+
+	use App::WebPerimeterScan::Scope;
+
+	my $scope = App::WebPerimeterScan::Scope->new;
 	$scope->load_file('scope.txt')->assert_target_allowed('www.example.com');
-	print "in scope\n" if $scope->covers('api.example.com');
+
+Ask before following a link, without stopping:
+
+	for my $link ('https://api.example.com/', 'https://other.example.net/') {
+		my $host = URI->new($link)->host;
+		next unless $scope->allows($host);
+		print "may visit $link\n";
+	}
+
+Scan a test server on your own machine.  Loopback and private addresses
+are refused unless you say so:
+
+	my $lab = App::WebPerimeterScan::Scope->new(allow_private => 1);
+	$lab->load_file('lab-scope.txt');
+	print "allowed\n" if $lab->allows('127.0.0.1');
+
+List the hosts that will be scanned:
+
+	for my $host (@{ $scope->hosts }) {
+		print "$host\n";
+	}
 
 =head1 DESCRIPTION
 
-Every network request the scanner makes is checked against this object.
-Hosts that are not listed in the scope file are never contacted, and hosts
-that resolve into loopback, private, link-local, documentation or other
-non-public address space are refused unless C<allow_private> is set.
+This module decides which hosts the scanner may contact.  The scanner asks
+it before every network request.
+
+A host may be scanned only when both of these are true:
+
+=over 4
+
+=item 1. The host is listed in the scope file (or matches a wildcard line
+in it).
+
+=item 2. The host does not resolve to a loopback, private, link-local,
+documentation or other non-public address.  The C<allow_private> option
+turns this second test off, for scanning your own test servers.
+
+=back
+
+=head2 The scope file
+
+The scope file is plain text, one entry per line.  Each line is one of:
+
+	example.com                 a host name
+	example.com:8443            a host name and a port
+	203.0.113.10                an IPv4 address
+	https://shop.example.com/   a URL: the scheme, host and any port are used
+	*.example.com               a wildcard: example.com and every name below it
+
+Blank lines are ignored.  A C<#> starts a comment, which runs to the end of
+the line.  Host names are compared without regard to case, and a final dot
+(C<example.com.>) is removed.  A line that cannot be understood is skipped
+with a warning.  A file with no usable line at all is an error.
 
 =head1 REQUIREMENTS
 
@@ -99,14 +149,6 @@ Usage: C<< my $scope = App::WebPerimeterScan::Scope->new(allow_private => 1); >>
 	Message                     Meaning / resolution
 	--------------------------  -------------------------------------
 	Unknown parameter 'X'       A misspelt argument name.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ InitScope ─────────────────────────────────────────
-	│ Scope'; allow_private? : 𝔹
-	├─────────────────────────────────────────────────────
-	│ entries' = ⟨⟩ ∧ allow_private' = allow_private?
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -175,17 +217,6 @@ Accepted lines, one per line, C<#> starts a comment:
 	                                            URL or *.domain; fix the line.
 	Scope file 'F' contains no usable hosts     Every line was blank, a
 	(fatal)                                     comment or unparsable.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ LoadFile ──────────────────────────────────────────
-	│ ΔScope; file? : PATH
-	├─────────────────────────────────────────────────────
-	│ readable(file?)
-	│ parsed = ⟨ e : ENTRY | ∃ l ∈ lines(file?) • parse(l) = e ⟩
-	│ #parsed > 0
-	│ entries' = entries ⁀ parsed ∧ source' = file?
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -265,14 +296,6 @@ Usage: C<< for my $entry (@{ $scope->entries }) { ... } >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Entries ───────────────────────────────────────────
-	│ ΞScope; result! : seq ENTRY
-	├─────────────────────────────────────────────────────
-	│ result! = entries
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub entries
@@ -312,14 +335,6 @@ Usage: C<< print 'Scope: ', $scope->source, "\n"; >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Source ────────────────────────────────────────────
-	│ ΞScope; result! : STRING
-	├─────────────────────────────────────────────────────
-	│ result! = source
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -361,15 +376,6 @@ Usage: C<< for my $entry (@{ $scope->hosts }) { ... } >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Hosts ─────────────────────────────────────────────
-	│ ΞScope; result! : seq ENTRY
-	├─────────────────────────────────────────────────────
-	│ concrete = entries ↾ { e | ¬ e.wildcard }
-	│ result! = ⟨ e : concrete | e is the first in concrete with e.host ⟩
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -413,16 +419,6 @@ Usage: C<< next unless $scope->covers($uri->host); >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Covers ────────────────────────────────────────────
-	│ ΞScope; host? : HOST; result! : 𝔹
-	├─────────────────────────────────────────────────────
-	│ h = lower(strip_dot(host?))
-	│ result! ⇔ ∃ e ∈ ran entries •
-	│     h = e.host ∨ (e.wildcard ∧ (∃ p • h = p ⁀ "." ⁀ e.host))
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -483,15 +479,6 @@ record would otherwise be judged on whichever the resolver listed first.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ IsPrivateTarget ───────────────────────────────────
-	│ ΞScope; host? : HOST; result! : 𝔹
-	├─────────────────────────────────────────────────────
-	│ A = resolve(host?)
-	│ result! ⇔ ∃ a ∈ A • a ∉ PUBLIC
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub is_private_target
@@ -541,14 +528,6 @@ address must be refused like a listed one would be.
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Allows ────────────────────────────────────────────
-	│ ΞScope; host? : HOST; result! : 𝔹
-	├─────────────────────────────────────────────────────
-	│ result! ⇔ Covers ∧ (allow_private ∨ ¬ IsPrivateTarget)
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub allows
@@ -596,16 +575,6 @@ Usage: C<< $scope->assert_target_allowed($host); >>
 	(fatal)                                       if you are authorised to.
 	Refusing to scan 'H': it resolves into        H is loopback/private; pass
 	private address space (fatal)                 --allow-private if intended.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ AssertTargetAllowed ───────────────────────────────
-	│ ΞScope; host? : HOST
-	├─────────────────────────────────────────────────────
-	│ Allows ∧ result! = self
-	└─────────────────────────────────────────────────────
-	NotListed ≙ [ΞScope; host? : HOST | ¬ Covers] ⇒ croak
-	Private   ≙ [ΞScope; host? : HOST | Covers ∧ ¬ allow_private ∧ IsPrivateTarget] ⇒ croak
 
 =cut
 
@@ -717,6 +686,75 @@ sub _os_error :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<A port in the scope file does not limit the ports.>
+C<example.com:8443> tells the scanner where the web server is.  It does not
+stop C<covers> or C<allows> from accepting C<example.com> on any other port,
+and the port scan still checks every port in its list.
+
+=item * B<A wildcard is not scanned by itself.>  C<*.example.com> lets the
+scanner follow links to C<shop.example.com>, but C<hosts> does not return
+it, so it is not a starting point.  A file that has only wildcard lines
+loads without error, but there is nothing to scan, and
+C<< App::WebPerimeterScan->run >> stops with an error.
+
+=item * B<A wildcard also covers the name itself, and every depth below
+it.>  C<*.example.com> covers C<example.com>, C<a.example.com> and
+C<a.b.example.com>.  It does not cover C<notexample.com>.
+
+=item * B<Names and addresses are separate entries.>  Listing C<example.com>
+does not allow C<203.0.113.10>, even if that is its address, and listing the
+address does not allow the name.
+
+=item * B<C<load_file> adds; it does not replace.>  Loading a second file
+keeps the entries of the first.  C<source> then names only the second file.
+Use a new object for a different scope.
+
+=item * B<C<undef> and the empty string are never covered.>  C<covers(undef)>,
+C<allows(undef)> and C<is_private_target(undef)> return 0.  For
+C<is_private_target>, 0 means "no private address was found", so do not use
+it alone as a safety check: use C<allows>, which also needs the host to be
+listed.
+
+=item * B<A name that does not resolve is not private.>
+C<is_private_target> returns 0 for it.  The scan of that host then fails
+to connect and is reported as an error; nothing is sent.
+
+=item * B<The answer can change.>  A name is resolved every time it is
+checked, and its DNS answer can change between the check and the
+connection.  See L</LIMITATIONS>.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * The scope file is read as bytes.  It may be saved as UTF-8; a
+byte-order mark is not supported.  Comments may contain any text.
+
+=item * B<Host names must be written in ASCII.>  For an international
+name such as C<bE<uuml>cher.example>, write its ASCII (Punycode) form,
+C<xn--bcher-kva.example>, in the scope file.
+
+A bare non-ASCII name is skipped as unparsable, with a warning.  A
+non-ASCII name inside a URL line (C<https://bE<uuml>cher.example/>) is
+worse: it is accepted without a warning, but because the file is read as
+bytes it is converted to the wrong ASCII name (C<xn--bcher-lka2c.example>),
+which matches no real host.  The scan of that line then fails to connect.
+
+=item * The file name passed to C<load_file> is used as Perl bytes, as
+the operating system gives them.  A name with non-ASCII characters works
+when it is passed exactly as it appears on disk.
+
+=item * Error messages contain the operating system's text, in the
+language of the current locale, exactly as Perl reports it in C<$!>.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -737,8 +775,182 @@ over IPv4, even where the private-address check considered IPv6 addresses.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 new
+
+	┌─ InitScope ─────────────────────────────────────────
+	│ Scope'; allow_private? : 𝔹
+	├─────────────────────────────────────────────────────
+	│ entries' = ⟨⟩ ∧ allow_private' = allow_private?
+	└─────────────────────────────────────────────────────
+
+=head2 load_file
+
+	┌─ LoadFile ──────────────────────────────────────────
+	│ ΔScope; file? : PATH
+	├─────────────────────────────────────────────────────
+	│ readable(file?)
+	│ parsed = ⟨ e : ENTRY | ∃ l ∈ lines(file?) • parse(l) = e ⟩
+	│ #parsed > 0
+	│ entries' = entries ⁀ parsed ∧ source' = file?
+	└─────────────────────────────────────────────────────
+
+=head2 entries
+
+	┌─ Entries ───────────────────────────────────────────
+	│ ΞScope; result! : seq ENTRY
+	├─────────────────────────────────────────────────────
+	│ result! = entries
+	└─────────────────────────────────────────────────────
+
+=head2 source
+
+	┌─ Source ────────────────────────────────────────────
+	│ ΞScope; result! : STRING
+	├─────────────────────────────────────────────────────
+	│ result! = source
+	└─────────────────────────────────────────────────────
+
+=head2 hosts
+
+	┌─ Hosts ─────────────────────────────────────────────
+	│ ΞScope; result! : seq ENTRY
+	├─────────────────────────────────────────────────────
+	│ concrete = entries ↾ { e | ¬ e.wildcard }
+	│ result! = ⟨ e : concrete | e is the first in concrete with e.host ⟩
+	└─────────────────────────────────────────────────────
+
+=head2 covers
+
+	┌─ Covers ────────────────────────────────────────────
+	│ ΞScope; host? : HOST; result! : 𝔹
+	├─────────────────────────────────────────────────────
+	│ h = lower(strip_dot(host?))
+	│ result! ⇔ ∃ e ∈ ran entries •
+	│     h = e.host ∨ (e.wildcard ∧ (∃ p • h = p ⁀ "." ⁀ e.host))
+	└─────────────────────────────────────────────────────
+
+=head2 is_private_target
+
+	┌─ IsPrivateTarget ───────────────────────────────────
+	│ ΞScope; host? : HOST; result! : 𝔹
+	├─────────────────────────────────────────────────────
+	│ A = resolve(host?)
+	│ result! ⇔ ∃ a ∈ A • a ∉ PUBLIC
+	└─────────────────────────────────────────────────────
+
+=head2 allows
+
+	┌─ Allows ────────────────────────────────────────────
+	│ ΞScope; host? : HOST; result! : 𝔹
+	├─────────────────────────────────────────────────────
+	│ result! ⇔ Covers ∧ (allow_private ∨ ¬ IsPrivateTarget)
+	└─────────────────────────────────────────────────────
+
+=head2 assert_target_allowed
+
+	┌─ AssertTargetAllowed ───────────────────────────────
+	│ ΞScope; host? : HOST
+	├─────────────────────────────────────────────────────
+	│ Allows ∧ result! = self
+	└─────────────────────────────────────────────────────
+	NotListed ≙ [ΞScope; host? : HOST | ¬ Covers] ⇒ croak
+	Private   ≙ [ΞScope; host? : HOST | Covers ∧ ¬ allow_private ∧ IsPrivateTarget] ⇒ croak
+
+=head1 STATE DIAGRAM
+
+A scope object is empty until a file is loaded.  Loading only adds
+entries.  The checks never change the object, but C<allows>,
+C<is_private_target> and C<assert_target_allowed> make a DNS lookup.
+
+	          new(allow_private => 0 or 1)
+	                     |
+	                     v
+	            +------------------+
+	            |      EMPTY       |  entries = (), source = '(none)'
+	            +------------------+
+	              |      |      |
+	              |      |      |  covers / allows       -> 0
+	              |      |      |  hosts / entries       -> empty list
+	              |      |      |  assert_target_allowed -> croak (not listed)
+	              |      |      +------> (no change)
+	              |      |
+	              |      |  load_file(f): f cannot be read, or has no
+	              |      |  usable line
+	              |      +------> croak; (no change)
+	              |
+	              |  load_file(f): at least one usable line
+	              |  -> entries added; a warning per unusable line;
+	              |     source = f; returns the object
+	              v
+	            +------------------+
+	    +------>|      LOADED      |  entries >= 1
+	    |       +------------------+
+	    |         |       |       |
+	    |         |       |       +-- covers(h) / hosts / entries / source
+	    |         |       |           -> answer; (no change)
+	    |         |       |
+	    |         |       +---------- allows(h) / is_private_target(h)
+	    |         |                   -> DNS lookup; answer; (no change)
+	    |         |
+	    |         |  assert_target_allowed(h)
+	    |         |    h not listed          -> croak "not listed"
+	    |         |    h private, not allowed -> croak "private"
+	    |         |    otherwise             -> returns the object
+	    |         |  (no change in every case)
+	    |         |
+	    +---------+  load_file(f2): at least one usable line
+	                 -> more entries added; source = f2
+
+	load_file(f2) when f2 cannot be read or has no usable line: croak,
+	and the entries already loaded are kept.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

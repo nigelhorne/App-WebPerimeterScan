@@ -49,23 +49,75 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
+Find the file on disk behind a URL:
+
+	use App::WebPerimeterScan::Source;
+
 	my $source = App::WebPerimeterScan::Source->new(
-		docroots    => ['/srv/www/example'],
-		source_dirs => ['/home/me/src/example'],
+		docroots => ['/srv/www/example'],
 	);
 
-	my $file  = $source->file_for('/.git/config');   # or undef
-	my $route = $source->route_for('/view/dogs');    # or undef
+	my $hit = $source->file_for('/.git/config');
+	print "served from $hit->{path} ($hit->{size} bytes)\n" if $hit;
+
+Find the line of code that defines an endpoint:
+
+	my $app = App::WebPerimeterScan::Source->new(
+		source_dirs => ['/home/me/src/example/lib'],
+	);
+
+	my $route = $app->route_for('/view/dogs?page=2');
+	print "$route->{method} $route->{pattern} at $route->{file} line $route->{line}\n"
+		if $route;
+
+List every endpoint the source defines:
+
+	for my $route (@{ $app->routes }) {
+		print "$route->{pattern}\n";
+	}
+
+Look for secret files that exist on disk, even if the server did not serve
+them:
+
+	my $probes = App::WebPerimeterScan::Checks::sensitive_probes();
+	for my $hit (@{ $source->sensitive_on_disk($probes) }) {
+		print "on disk: $hit->{relative}\n";
+	}
 
 =head1 DESCRIPTION
 
-A black-box scan knows only that a URL answered.  This turns that into
-something actionable: which file under a document root is being served, and
-which declaration in the source tree defines the endpoint.
+A scan from outside can only say "this URL answered".  This module adds
+two facts that tell you what to change:
 
-Paths are resolved with C<realpath> and must stay inside the docroot, so a
-C<..> component, a symlink pointing out of the tree or a percent-encoded
-traversal resolves outside and is refused.
+=over 4
+
+=item * B<The file.>  Given a document root (the directory the web server
+serves files from), it finds the file on disk that a URL path would be
+served from.
+
+=item * B<The route.>  Given your application's source code, it finds the
+line that declares the endpoint, for example
+C<< $r->get('/view/:name') >>.
+
+=back
+
+The module only reads files.  It never sends network traffic and never
+changes a file.
+
+A path is only accepted if it is inside the document root after every
+symbolic link is followed.  So C<..> in the path, a symbolic link that
+points out of the tree, and C<%2e%2e> (an encoded C<..>) cannot reach a
+file outside it.
+
+=head2 Route patterns
+
+Routes are found in F<.pm>, F<.pl>, F<.psgi> and F<.cgi> files by looking
+for calls such as C<< ->get('/path') >>, C<< ->post('/path') >> and
+C<< ->any('/path') >> whose pattern starts with C</>.  In a pattern,
+C<:name> matches one path segment, C<*name> matches the rest of the path,
+and every other character must match exactly.  A C</> at the end of the
+path is optional.  The directories F<.git>, F<.svn>, F<blib> and
+F<node_modules> are not searched.
 
 =head1 SUBROUTINES/METHODS
 
@@ -105,15 +157,6 @@ Usage: C<< my $source = App::WebPerimeterScan::Source->new(docroots => [$dir]); 
 	Message                       Meaning / resolution
 	----------------------------  ---------------------------------
 	Unknown parameter 'X'         A misspelt argument name.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ InitSource ────────────────────────────────────────
-	│ Source'; docroots?, source_dirs? : seq PATH
-	├─────────────────────────────────────────────────────
-	│ docroots' = docroots? ↾ DEFINED ∧ source_dirs' = source_dirs? ↾ DEFINED
-	│ routes' = ⊥
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -165,14 +208,6 @@ Usage: C<< for my $dir (@{ $source->docroots }) { ... } >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Docroots ──────────────────────────────────────────
-	│ ΞSource; result! : seq PATH
-	├─────────────────────────────────────────────────────
-	│ result! = squash(⟨ realpath(d) | d ∈ docroots ∧ is_dir(d) ⟩)
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -232,18 +267,6 @@ refused, rather than slipping through as an opaque name.
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ FileFor ───────────────────────────────────────────
-	│ ΞSource; url_path? : STRING; result! : HIT ∪ {⊥}
-	├─────────────────────────────────────────────────────
-	│ r = unescape(strip_query(url_path?)) without leading "/"
-	│ ".." ∈ segments(r) ⇒ result! = ⊥
-	│ result! ≠ ⊥ ⇒ is_file(result!.path)
-	│              ∧ result!.path = realpath(result!.docroot / r)
-	│              ∧ result!.docroot prefix_of result!.path
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -309,15 +332,6 @@ Usage: C<< my $hits = $source->sensitive_on_disk(App::WebPerimeterScan::Checks::
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ SensitiveOnDisk ───────────────────────────────────
-	│ ΞSource; probes? : seq PROBE; result! : seq HIT
-	├─────────────────────────────────────────────────────
-	│ result! = ⟨ FileFor(p.path) ⊕ {probe ↦ p}
-	│             | p ∈ probes? ∧ FileFor(p.path) ≠ ⊥ ⟩
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub sensitive_on_disk
@@ -367,16 +381,6 @@ Usage: C<< printf "%d route(s)\n", scalar @{ $source->routes }; >>
 	-------------------------------------  ---------------------------------
 	Skipping source file 'F': E (warning)  F could not be opened; check its
 	                                       permissions.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Routes ────────────────────────────────────────────
-	│ ΔSource; result! : seq ROUTE
-	├─────────────────────────────────────────────────────
-	│ routes = ⊥ ⇒ routes' = ⁀/ ⟨ declared(f) | f ∈ files(source_dirs) ⟩
-	│ routes ≠ ⊥ ⇒ routes' = routes
-	│ result! = routes'
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -428,17 +432,6 @@ Usage: C<< my $route = $source->route_for('/view/dogs'); >>
 =head3 MESSAGES
 
 As C<routes>.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ RouteFor ──────────────────────────────────────────
-	│ ΞSource; url_path? : STRING; result! : ROUTE ∪ {⊥}
-	├─────────────────────────────────────────────────────
-	│ p = "/" ⁀ strip_query(url_path?) without leading "/"
-	│ M = ⟨ r ∈ routes | p matches r.re ⟩
-	│ M ≠ ⟨⟩ ⇒ result! = head M
-	│ M = ⟨⟩ ⇒ result! = ⊥
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -586,6 +579,60 @@ sub _inside :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<A document root that does not exist is ignored without a
+warning.>  C<docroots> returns only the directories that exist.  Check it
+after C<new> if a typo would matter:
+C<< warn "no docroot\n" unless @{ $source->docroots } >>.
+
+=item * B<The route list is read once.>  C<routes> reads the source tree
+the first time it is called, and then always returns that list.  Create a
+new object after the source code changes.
+
+=item * B<C<file_for> and C<route_for> return C<undef> when nothing is
+found.>  Test the result before you use it.  C<file_for> also returns
+C<undef> for a directory, for a path that contains C<..>, and for
+C<undef> or an empty string.
+
+=item * B<C<file_for> wants the path of a URL, not the whole URL.>  Pass
+C</a/b.txt>, not C<https://example.com/a/b.txt>.  A query (C<?x=1>) or a
+fragment (C<#top>) is ignored.
+
+=item * B<The first route that matches wins.>  Routes are tried in the
+order they were found, which is the order of the files on disk.  When
+C</items/new> and C</items/:id> both match, the one found first is
+returned.
+
+=item * B<Paths are real paths.>  C<path> has every symbolic link
+resolved.  On macOS, for example, a file under F</var> is returned as
+F</private/var/...>.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * B<C<file_for> decodes the URL path once.>  C<%20> becomes a space and
+C<%C3%A9> becomes the two UTF-8 bytes of C<E<eacute>>, as a web server
+would do.  The result is matched against file names as bytes, so a file
+whose name is UTF-8 on disk is found.  A name stored in another encoding
+is not.  C<route_for> does not decode: pass the path as it
+appears in the URL.
+
+=item * B<File and directory names are bytes.>  The paths returned are the
+bytes the operating system gave.  Do not decode them before using them as
+file names.
+
+=item * B<Source files are read as bytes.>  Route patterns must be ASCII
+to be useful, because URLs are ASCII.  UTF-8 elsewhere in a source file
+does no harm.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -598,13 +645,158 @@ skipped rather than approximated.
 =item * A route pattern can only be matched against a path, so two routes
 that differ only by HTTP method are both reported for the same path.
 
-=item * C<_inside> compares paths with "/", which is what C<realpath>
-returns on Unix; Windows paths are not tested.
+=item * The check that a file is inside its document root compares paths
+that use C</>, which is what C<realpath> returns on Unix.  Windows paths
+are not tested.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 new
+
+	┌─ InitSource ────────────────────────────────────────
+	│ Source'; docroots?, source_dirs? : seq PATH
+	├─────────────────────────────────────────────────────
+	│ docroots' = docroots? ↾ DEFINED ∧ source_dirs' = source_dirs? ↾ DEFINED
+	│ routes' = ⊥
+	└─────────────────────────────────────────────────────
+
+=head2 docroots
+
+	┌─ Docroots ──────────────────────────────────────────
+	│ ΞSource; result! : seq PATH
+	├─────────────────────────────────────────────────────
+	│ result! = squash(⟨ realpath(d) | d ∈ docroots ∧ is_dir(d) ⟩)
+	└─────────────────────────────────────────────────────
+
+=head2 file_for
+
+	┌─ FileFor ───────────────────────────────────────────
+	│ ΞSource; url_path? : STRING; result! : HIT ∪ {⊥}
+	├─────────────────────────────────────────────────────
+	│ r = unescape(strip_query(url_path?)) without leading "/"
+	│ ".." ∈ segments(r) ⇒ result! = ⊥
+	│ result! ≠ ⊥ ⇒ is_file(result!.path)
+	│              ∧ result!.path = realpath(result!.docroot / r)
+	│              ∧ result!.docroot prefix_of result!.path
+	└─────────────────────────────────────────────────────
+
+=head2 sensitive_on_disk
+
+	┌─ SensitiveOnDisk ───────────────────────────────────
+	│ ΞSource; probes? : seq PROBE; result! : seq HIT
+	├─────────────────────────────────────────────────────
+	│ result! = ⟨ FileFor(p.path) ⊕ {probe ↦ p}
+	│             | p ∈ probes? ∧ FileFor(p.path) ≠ ⊥ ⟩
+	└─────────────────────────────────────────────────────
+
+=head2 routes
+
+	┌─ Routes ────────────────────────────────────────────
+	│ ΔSource; result! : seq ROUTE
+	├─────────────────────────────────────────────────────
+	│ routes = ⊥ ⇒ routes' = ⁀/ ⟨ declared(f) | f ∈ files(source_dirs) ⟩
+	│ routes ≠ ⊥ ⇒ routes' = routes
+	│ result! = routes'
+	└─────────────────────────────────────────────────────
+
+=head2 route_for
+
+	┌─ RouteFor ──────────────────────────────────────────
+	│ ΞSource; url_path? : STRING; result! : ROUTE ∪ {⊥}
+	├─────────────────────────────────────────────────────
+	│ p = "/" ⁀ strip_query(url_path?) without leading "/"
+	│ M = ⟨ r ∈ routes | p matches r.re ⟩
+	│ M ≠ ⟨⟩ ⇒ result! = head M
+	│ M = ⟨⟩ ⇒ result! = ⊥
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+An object has two caches, each filled the first time it is needed and
+never changed after that: the list of document roots that exist, and the
+list of routes.
+
+	        new(docroots, source_dirs)
+	                   |
+	                   v
+	        +----------------------+
+	        |        FRESH         |  nothing read from disk yet
+	        +----------------------+
+	           |                |
+	           | docroots,      | routes, route_for
+	           | file_for,      |
+	           | sensitive_on_  |
+	           | disk           |
+	           v                v
+	  +-----------------+  +-----------------+
+	  | DOCROOTS KNOWN  |  |  ROUTES KNOWN   |
+	  | each docroot    |  | every source    |
+	  | checked once    |  | file read once; |
+	  | with realpath;  |  | a warning for   |
+	  | missing ones    |  | each file that  |
+	  | dropped         |  | cannot be read  |
+	  +-----------------+  +-----------------+
+	           |                |
+	           +-------+--------+
+	                   |  the other group of methods is called
+	                   v
+	        +----------------------+
+	        |     BOTH KNOWN       |
+	        +----------------------+
+	                   |
+	                   |  any method
+	                   v
+	          answer from the caches; file_for and
+	          sensitive_on_disk still check each file
+	          on disk; (no change to the object)
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

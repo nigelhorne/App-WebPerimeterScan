@@ -85,23 +85,70 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
-	print App::WebPerimeterScan::Report::as_text($findings,
-		version      => '0.001.0',
+Print a text report after a scan:
+
+	use App::WebPerimeterScan::Report;
+
+	my %meta = (
+		version      => $App::WebPerimeterScan::VERSION,
 		generated    => '2026-11-05T10:00:00Z',
 		scope_source => 'scope.txt',
+		requests     => $scanner->http->requests,
 		hosts        => $scanner->host_reports,
 	);
+	print App::WebPerimeterScan::Report::as_text($scanner->findings, %meta);
+
+Write the text report to a file, without colour codes:
+
+	open my $out, '>', 'report.txt';
+	print $out App::WebPerimeterScan::Report::as_text($findings, %meta, color => 0);
+	close $out;
+
+Save a JSON report for another program:
+
+	open my $json, '>', 'report.json';
+	print $json App::WebPerimeterScan::Report::as_json($findings, %meta);
+	close $json;
+
+Make an HTML page to send by e-mail:
+
+	my $page = App::WebPerimeterScan::Report::as_html($findings, %meta);
+
+The metadata is optional.  The smallest call is:
+
+	print App::WebPerimeterScan::Report::as_text($findings);
 
 =head1 DESCRIPTION
 
-Each function takes the findings collector plus the scan metadata the runner
-gathered - C<version>, C<generated>, C<scope_source>, C<requests>, the
-per-host C<hosts> list and, for text, C<color> - and renders it.
+This module turns the findings of a scan into a report.  There are three
+formats:
 
-Ordering and de-duplication belong to the findings collector, so the three
-formats always agree on what is reported and in what order.  Labels come
-from the message catalogue; finding text was rendered when the finding was
-recorded.
+=over 4
+
+=item * B<Text> (C<as_text>), for a terminal or a log.  It can use colour.
+
+=item * B<JSON> (C<as_json>), for other programs.  The keys are always in
+the same order, so two reports can be compared with C<diff>.
+
+=item * B<HTML> (C<as_html>), a single page with its own style sheet and no
+JavaScript, safe to open from an e-mail.
+
+=back
+
+Each function takes the findings collection first, then optional
+I<metadata>, given as name =E<gt> value pairs:
+
+	version       the version of the scanner
+	generated     when the scan ran, as text
+	scope_source  the name of the scope file
+	requests      how many HTTP requests were sent
+	hosts         the list from App::WebPerimeterScan->host_reports
+	color         text only: 1 for colour, 0 for none
+
+All three formats list the same findings in the same order, because the
+order comes from L<App::WebPerimeterScan::Findings>.  The labels (such as
+"Fix:") come from the message catalogue.  The text of each finding was
+written when the finding was recorded.
 
 =head1 REQUIREMENTS
 
@@ -156,18 +203,6 @@ Usage: C<< print as_text($findings, %meta); >>
 	----------------------------------------  -------------------------------
 	Parameter 'findings' must be an object    Pass an App::WebPerimeterScan::
 	... (fatal)                               Findings as the first argument.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ AsText ────────────────────────────────────────────
-	│ ΞFindings; meta? : META; result! : TEXT
-	├─────────────────────────────────────────────────────
-	│ header(meta?) prefix_of result!
-	│ ∀ h ∈ ran meta?.hosts • host_block(h) in result!
-	│ items = ⟨⟩ ⇒ clean_message suffix_of result!
-	│ items ≠ ⟨⟩ ⇒ ∀ f ∈ ran sorted • "[" ⁀ f.id ⁀ "]" in result!
-	│            ∧ summary(counts) suffix_of result!
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -243,7 +278,15 @@ Usage: C<< print as_json($findings, %meta); >>
 
 =head4 INPUT
 
-As C<as_text>.
+	{
+		findings     => { type => 'object', isa => 'App::WebPerimeterScan::Findings', position => 0 },
+		version      => { type => 'string', optional => 1 },
+		generated    => { type => 'string', optional => 1 },
+		scope_source => { type => 'string', optional => 1 },
+		requests     => { type => 'integer', min => 0, optional => 1 },
+		hosts        => { type => 'arrayref', optional => 1 },
+		color        => { type => 'boolean', optional => 1 },	# accepted and ignored
+	}
 
 =head4 OUTPUT
 
@@ -252,16 +295,6 @@ As C<as_text>.
 =head3 MESSAGES
 
 As C<as_text>.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ AsJson ────────────────────────────────────────────
-	│ ΞFindings; meta? : META; result! : JSON
-	├─────────────────────────────────────────────────────
-	│ decode(result!).findings = ⟨ f ↾ FIELDS | f ∈ sorted ⟩
-	│ decode(result!).summary = counts
-	│ decode(result!).hosts = meta?.hosts
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -310,7 +343,15 @@ Usage: C<< print as_html($findings, %meta); >>
 
 =head4 INPUT
 
-As C<as_text>.
+	{
+		findings     => { type => 'object', isa => 'App::WebPerimeterScan::Findings', position => 0 },
+		version      => { type => 'string', optional => 1 },
+		generated    => { type => 'string', optional => 1 },
+		scope_source => { type => 'string', optional => 1 },
+		requests     => { type => 'integer', min => 0, optional => 1 },
+		hosts        => { type => 'arrayref', optional => 1 },
+		color        => { type => 'boolean', optional => 1 },	# accepted and ignored
+	}
 
 =head4 OUTPUT
 
@@ -319,16 +360,6 @@ As C<as_text>.
 =head3 MESSAGES
 
 As C<as_text>.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ AsHtml ────────────────────────────────────────────
-	│ ΞFindings; meta? : META; result! : HTML
-	├─────────────────────────────────────────────────────
-	│ ∀ v ∈ values(meta?) ∪ values(ran items) •
-	│     escape(v) in result! ∧ (v ≠ escape(v) ⇒ ¬ (v in result!))
-	│ #rows(result!) = max(1, #items)
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -556,6 +587,61 @@ sub _html_finding :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<These are functions, not methods.>  Call
+C<App::WebPerimeterScan::Report::as_text($findings, ...)>.  Writing
+C<< App::WebPerimeterScan::Report->as_text($findings) >> passes the class
+name as the first argument, and the call dies.
+
+=item * B<A misspelt metadata name is fatal.>  C<< scope => 'x' >> dies
+with "Unknown parameter"; the name is C<scope_source>.
+
+=item * B<Colour codes in a file.>  When C<color> is not given, the text
+report uses colour if STDOUT is a terminal, even if you write the report
+to a file.  Pass C<< color => 0 >> when the report is not for the screen.
+
+=item * B<C<undef> metadata is the same as leaving it out.>  For example,
+C<< requests => undef >> is accepted, and no request count is shown.
+
+=item * B<Without C<hosts>, the per-host details are missing.>  The TLS
+summary, the open ports and the list of pages appear only when C<hosts>
+is given.  The findings are listed either way.
+
+=item * B<The reports return a string; they do not print.>  Print the result
+yourself.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * B<The output has the same kind of string as the input.>  The
+scanner gives byte strings (UTF-8 from web pages stays as UTF-8 bytes), so
+the reports are byte strings with correct UTF-8.  Print them with no
+encoding layer.
+
+=item * B<If you give character strings,> the result is a character string;
+print it through C<:encoding(UTF-8)>.  Do not mix the two kinds; see
+L<App::WebPerimeterScan::Findings/ENCODING>.
+
+=item * B<HTML:> the page declares C<< <meta charset="utf-8"> >>.  Every
+value is escaped with L<HTML::Entities>, so C<< < >>, C<< > >>, C<&> and
+quotes cannot break the page.  Other characters, including non-ASCII
+UTF-8 bytes, are copied unchanged.  The page relies on its charset
+declaration to show them correctly.
+
+=item * B<JSON:> non-ASCII bytes are copied into the output unchanged, so
+UTF-8 input gives valid UTF-8 JSON, which C<decode_json> reads back.
+
+=item * B<Text:> printed as it is.  A terminal that is not set to UTF-8 shows
+non-ASCII text wrongly, but the bytes in the report are correct.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -571,8 +657,125 @@ safe to open from e-mail, but it cannot sort or filter.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 as_text
+
+	┌─ AsText ────────────────────────────────────────────
+	│ ΞFindings; meta? : META; result! : TEXT
+	├─────────────────────────────────────────────────────
+	│ header(meta?) prefix_of result!
+	│ ∀ h ∈ ran meta?.hosts • host_block(h) in result!
+	│ items = ⟨⟩ ⇒ clean_message suffix_of result!
+	│ items ≠ ⟨⟩ ⇒ ∀ f ∈ ran sorted • "[" ⁀ f.id ⁀ "]" in result!
+	│            ∧ summary(counts) suffix_of result!
+	└─────────────────────────────────────────────────────
+
+=head2 as_json
+
+	┌─ AsJson ────────────────────────────────────────────
+	│ ΞFindings; meta? : META; result! : JSON
+	├─────────────────────────────────────────────────────
+	│ decode(result!).findings = ⟨ f ↾ FIELDS | f ∈ sorted ⟩
+	│ decode(result!).summary = counts
+	│ decode(result!).hosts = meta?.hosts
+	└─────────────────────────────────────────────────────
+
+=head2 as_html
+
+	┌─ AsHtml ────────────────────────────────────────────
+	│ ΞFindings; meta? : META; result! : HTML
+	├─────────────────────────────────────────────────────
+	│ ∀ v ∈ values(meta?) ∪ values(ran items) •
+	│     escape(v) in result! ∧ (v ≠ escape(v) ⇒ ¬ (v in result!))
+	│ #rows(result!) = max(1, #items)
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The module keeps no state.  Each function reads the findings and the
+metadata and returns a new string; nothing is changed.  Every format contains
+the parts below, but each one lays them out in its own way.
+
+	  findings + metadata
+	        |
+	        v
+	  +----------------+
+	  |   VALIDATE     |--- the first argument is not a findings
+	  +----------------+    collection, or a metadata name is unknown
+	        |                  -> croak
+	        v
+	  +----------------+
+	  |   HEADER       |  tool, version, time, scope file, request count
+	  +----------------+
+	        |
+	        v
+	  +----------------+
+	  |   HOSTS        |  for each entry in 'hosts': TLS summary,
+	  +----------------+  certificate, open ports, pages scanned
+	        |
+	        v
+	  +----------------+
+	  |   FINDINGS     |  in the order of findings->sorted; or the
+	  +----------------+  "no findings" message
+	        |
+	        v
+	  +----------------+
+	  |   SUMMARY      |  the count at each severity
+	  +----------------+
+	        |
+	        +--------------+---------------+
+	        | as_text      | as_json       | as_html
+	        v              v               v
+	   lines of text,   one JSON        one HTML page; every
+	   coloured if      object, keys    value escaped
+	   'color' is on    sorted
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

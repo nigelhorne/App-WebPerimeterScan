@@ -35,6 +35,10 @@ Revision history for App-WebPerimeterScan
 	- Require Net::SSLeay 1.92, which compiles against OpenSSL 3 where 1.46
 	  cannot, and lower the IO::Select and IO::Socket::INET floors to 1.17
 	  and 1.31, the versions the suite is actually tested against
+	- Every module documents its common pitfalls, how it handles UTF-8 and
+	  other non-ASCII text, a state diagram, and a formal (Z) specification
+	  of each method; the rules table in App::WebPerimeterScan::Checks now
+	  gives the severity of every rule
 
 	[ Bug Fixes ]
 	- Classify private addresses correctly: 192.0.0.0/8 and 223.0.0.0/8 were

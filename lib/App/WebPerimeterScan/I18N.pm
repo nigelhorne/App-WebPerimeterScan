@@ -60,6 +60,35 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
+Render a message with values:
+
+	use App::WebPerimeterScan::I18N;
+
+	my $i18n = 'App::WebPerimeterScan::I18N';
+	print $i18n->i18n('scope.not_listed', {
+		host   => 'evil.example',
+		source => 'scope.txt',
+	}), "\n";
+
+Let the count choose between singular and plural:
+
+	# "1 endpoint defined in source was not scanned"
+	# "3 endpoints defined in source were not scanned"
+	print $i18n->i18n('source-routes-unvisited.title', { count => 3 }), "\n";
+
+Choose the language, whatever the environment says:
+
+	$App::WebPerimeterScan::I18N::config{language} = 'de';
+	print $i18n->language, "\n";	# 'de' if a German catalogue exists, else 'en'
+
+Remove the "at FILE line N." that C<croak> adds, before you show an error
+to a person:
+
+	eval { $scope->load_file('missing.txt'); 1 }
+		or print App::WebPerimeterScan::I18N::clean_error($@), "\n";
+
+Write a module that throws catalogued errors:
+
 	package App::WebPerimeterScan::Example;
 
 	use parent 'App::WebPerimeterScan::I18N';
@@ -144,18 +173,6 @@ Usage: C<< my $lang = App::WebPerimeterScan::I18N->language; >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Language ──────────────────────────────────────────
-	│ Ξenvironment; catalogue : LANG ⇸ MESSAGES
-	│ result! : LANG
-	├─────────────────────────────────────────────────────
-	│ prefs = ⟨ configured ⟩ ⁀ wanted(environment)
-	│ (∃ l ∈ ran prefs ∩ dom catalogue ⇒
-	│     result! = head(prefs ↾ dom catalogue))
-	│ (ran prefs ∩ dom catalogue = ∅ ⇒ result! = fallback)
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub language
@@ -211,18 +228,6 @@ Usage: C<< $self->i18n('scope.empty', { file => $file }) >>
 	-----------------------------------  ---------------------------------------
 	No message is defined for "KEY"      The key is in no catalogue.  Add it to
 	                                     App::WebPerimeterScan::Messages (en).
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ I18n ──────────────────────────────────────────────
-	│ ΞCatalogue
-	│ key? : KEY; args? : NAME ⇸ VALUE; result! : STRING
-	├─────────────────────────────────────────────────────
-	│ key? ∈ dom catalogue(language) ∪ dom catalogue(fallback)
-	│ m = (catalogue(language) ⊕ ∅) (key?) ⊕ catalogue(fallback)(key?)
-	│ result! = render(select(m, args?), args?)
-	│ ∀ p ∈ placeholders(result!) • p ∉ dom args?
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -287,14 +292,6 @@ Usage: C<< $self->i18n("$id.fix") if $self->has_message("$id.fix") >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ HasMessage ────────────────────────────────────────
-	│ ΞCatalogue; key? : KEY; result! : 𝔹
-	├─────────────────────────────────────────────────────
-	│ result! ⇔ key? ∈ dom catalogue(language) ∪ dom catalogue(fallback)
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub has_message
@@ -339,15 +336,6 @@ Usage: C<< print STDERR clean_error($@), "\n" if $@; >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ CleanError ────────────────────────────────────────
-	│ error? : STRING; result! : STRING
-	├─────────────────────────────────────────────────────
-	│ ∃ loc : LOCATION • error? = result! ⁀ loc ∨ error? = result!
-	│ ¬ (∃ loc : LOCATION • suffix(result!) = loc)
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -481,6 +469,72 @@ sub _render :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<A missing key is fatal; a missing value is not.>  C<i18n> with a
+key that no catalogue has dies with a stack trace, because that is a bug in
+the code.  A placeholder with no value (or an C<undef> value) stays in the
+text as C<{name}>, because the message is still useful.
+
+=item * B<A format must suit its value.>  C<{seconds:%.1f}> with the value
+C<'soon'> prints C<0.0> and a Perl warning "isn't numeric".  Pass numbers
+to numeric formats.
+
+=item * B<Give every selector an C<other> form.>  When the chosen form is
+missing, the C<other> form is used.  When C<other> is missing too, the
+message is the empty string, with no warning.
+
+=item * B<A count that is not a number is plural.>  C<{ count => 'many' }>
+and a missing C<count> both choose the C<other> form.
+
+=item * B<A new language needs a plural rule.>  A catalogue for a language
+with no entry in C<%App::WebPerimeterScan::I18N::PLURAL_RULE> uses the
+English rule (1 is C<one>, every other number is C<other>).  That is wrong
+for languages such as Polish or Arabic, and for Japanese, which has no
+plural.
+
+=item * B<The order of the environment variables matters.>  The first
+language found wins, in this order: C<$config{language}>, then
+C<LANGUAGE> (which may be a list such as C<de:fr>), then C<LC_ALL>,
+C<LC_MESSAGES> and C<LANG>.  The values C<C> and C<POSIX> are skipped.
+A language with no catalogue is skipped too, so the answer is often C<en>.
+
+=item * B<C<clean_error> is a function, not a method.>  Call it as
+C<App::WebPerimeterScan::I18N::clean_error($@)>.  It only removes Perl's
+location suffix; the message text is not changed.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * B<Catalogue text is bytes.>  F<Messages.pm> does not say
+C<use utf8>, so a translation written in UTF-8 in that file is a UTF-8 byte
+string.  That matches the rest of the distribution, where page text and
+file names are byte strings too, and the reports come out as correct
+UTF-8.  Any language and emoji can be used this way.
+
+=item * B<Do not add C<use utf8> to a catalogue.>  It makes the messages
+character strings.  Joined with the byte strings from web pages, the bytes
+are then encoded a second time, and the report shows C<E<Atilde>E<copy>>
+for C<E<eacute>>.
+
+=item * B<Values are inserted as they are.>  A value that is a byte string
+stays a byte string.  A value that is a character string makes the whole
+message a character string; print it through an C<:encoding(UTF-8)> layer.
+
+=item * B<C<sprintf> widths count bytes.>  C<{name:%-10s}> pads a UTF-8
+byte string by bytes, so a name with non-ASCII letters looks shorter than
+ten letters.
+
+=item * B<Keys and placeholder names are ASCII:> letters, digits, C<_>,
+C<.> and C<->.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -503,8 +557,143 @@ language at once.  The cost is a few hash lookups per message.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 language
+
+	┌─ Language ──────────────────────────────────────────
+	│ Ξenvironment; catalogue : LANG ⇸ MESSAGES
+	│ result! : LANG
+	├─────────────────────────────────────────────────────
+	│ prefs = ⟨ configured ⟩ ⁀ wanted(environment)
+	│ (∃ l ∈ ran prefs ∩ dom catalogue ⇒
+	│     result! = head(prefs ↾ dom catalogue))
+	│ (ran prefs ∩ dom catalogue = ∅ ⇒ result! = fallback)
+	└─────────────────────────────────────────────────────
+
+=head2 i18n
+
+	┌─ I18n ──────────────────────────────────────────────
+	│ ΞCatalogue
+	│ key? : KEY; args? : NAME ⇸ VALUE; result! : STRING
+	├─────────────────────────────────────────────────────
+	│ key? ∈ dom catalogue(language) ∪ dom catalogue(fallback)
+	│ m = (catalogue(language) ⊕ ∅) (key?) ⊕ catalogue(fallback)(key?)
+	│ result! = render(select(m, args?), args?)
+	│ ∀ p ∈ placeholders(result!) • p ∉ dom args?
+	└─────────────────────────────────────────────────────
+
+=head2 has_message
+
+	┌─ HasMessage ────────────────────────────────────────
+	│ ΞCatalogue; key? : KEY; result! : 𝔹
+	├─────────────────────────────────────────────────────
+	│ result! ⇔ key? ∈ dom catalogue(language) ∪ dom catalogue(fallback)
+	└─────────────────────────────────────────────────────
+
+=head2 clean_error
+
+	┌─ CleanError ────────────────────────────────────────
+	│ error? : STRING; result! : STRING
+	├─────────────────────────────────────────────────────
+	│ ∃ loc : LOCATION • error? = result! ⁀ loc ∨ error? = result!
+	│ ¬ (∃ loc : LOCATION • suffix(result!) = loc)
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The class keeps no state of its own.  It reads C<%config>, the
+environment and the catalogue every time.  One call to C<i18n> goes
+through these steps:
+
+	  i18n(key, args)
+	        |
+	        v
+	  +----------------+
+	  | CHOOSE         |  first of: $config{language}, LANGUAGE (a list),
+	  | LANGUAGE       |  LC_ALL, LC_MESSAGES, LANG that has a catalogue;
+	  +----------------+  'C' and 'POSIX' skipped; else the fallback 'en'
+	        |
+	        v
+	  +----------------+
+	  | LOOK UP KEY    |--- not in that language, and not in 'en'
+	  +----------------+       -> confess (dies with a stack trace)
+	        |
+	        |  found (in that language, or else in 'en')
+	        v
+	  +----------------+
+	  | SELECT FORM    |<---------------------------------+
+	  +----------------+                                  |
+	     |          |                                     |
+	     | a string | a selector                          |
+	     |          v                                     |
+	     |   plural: the language's rule on args{name}    |
+	     |   select: the value of args{name}              |
+	     |   form missing -> 'other'                      |
+	     |   'other' missing -> ''                        |
+	     |          |                                     |
+	     |          |  the chosen form is a selector -----+
+	     |          |
+	     |          |  the chosen form is a string
+	     v          v
+	  +----------------+
+	  | FILL IN        |  each {name} or {name:%fmt} that has a defined
+	  | PLACEHOLDERS   |  value is replaced, in one pass; the others stay
+	  +----------------+
+	        |
+	        v
+	  the message (a string)
+
+The protected helpers add one step after that:
+
+	  _throw(key, args)  -> i18n(key, args) -> croak   (the caller dies)
+	  _warn(key, args)   -> i18n(key, args) -> carp    (returns the object)
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

@@ -619,31 +619,169 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
+Read one message, without the placeholders filled in:
+
 	use App::WebPerimeterScan::Messages;
 
-	# Add a partial German catalogue; missing keys fall back to English.
+	my $en = $App::WebPerimeterScan::Messages::CATALOGUE{en};
+	print $en->{'csp-missing.title'}, "\n";
+
+Add a partial German catalogue.  Every key it does not have falls back to
+English:
+
 	$App::WebPerimeterScan::Messages::CATALOGUE{de} = {
 		'csp-missing.title' => 'Content-Security-Policy fehlt',
+		'report.no_findings' => 'Keine Befunde.',
 	};
+
+Add a message with a plural form:
+
+	$App::WebPerimeterScan::Messages::CATALOGUE{de}{'source-routes-unvisited.title'} = {
+		plural => 'count',
+		forms  => {
+			one   => '{count} Endpunkt wurde nicht gescannt',
+			other => '{count} Endpunkte wurden nicht gescannt',
+		},
+	};
+
+Translate a saved JSON report afterwards, using the rule ids in it:
+
+	my $i18n   = 'App::WebPerimeterScan::I18N';
+	my $report = JSON::PP::decode_json($json_text);
+	for my $finding (@{ $report->{findings} }) {
+		my $key = "$finding->{id}.title";
+		# A title may need values (such as {url}) that the report does not
+		# keep, so fall back to the English title already in the report.
+		my $title = $i18n->has_message($key) ? $i18n->i18n($key, $finding) : $finding->{title};
+		print "$title\n";
+	}
 
 =head1 DESCRIPTION
 
-Every user-facing string in the distribution, keyed by a stable identifier
-and grouped by language.  The format of a message and the way a key is
-chosen are described in L<App::WebPerimeterScan::I18N>.
+This module holds every piece of text that the distribution shows to a
+person: finding titles and advice, error messages, warnings, report labels
+and the command-line help.  No other module contains English sentences.
 
-Finding text follows the pattern C<< <rule id>.title >>, C<.detail>, C<.fix>
-and C<.evidence>; the rule id is the C<id> field of the finding, so a JSON
-report can be translated after the fact by looking its ids up here.
+The text is in one hash, C<%App::WebPerimeterScan::Messages::CATALOGUE>.
+Its keys are language codes (C<en>), and each value is a hash of
+I<message key> to I<message>.  How a message is written (placeholders,
+plural and select forms) and how the language is chosen are described in
+L<App::WebPerimeterScan::I18N>.
+
+=head2 Message keys
+
+Keys are short, stable names made of words joined by dots, such as
+C<scope.empty> or C<report.no_findings>.  The first word is the part of the
+program that uses the message.
+
+The text of a finding uses the finding's rule id as the first part:
+
+	<rule id>.title      required; one line
+	<rule id>.detail     required; why the problem matters
+	<rule id>.fix        optional; what to do about it
+	<rule id>.evidence   optional; a template for the evidence line
+
+The rule id is the C<id> field of each finding, so a saved JSON report can
+be translated later by looking its ids up here.  The one exception is the
+port rule: its ids are C<port-open-22>, C<port-open-3306> and so on, and
+all of them share the messages under C<port-open>.
 
 This module has no subroutines.
+
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Do not replace the English catalogue.>  English is the fallback
+for every other language.  A key removed from C<en> makes every language
+die when that message is needed.  Add to it, or add a new language.
+
+=item * B<A new language replaces nothing until it is chosen.>  Adding
+C<$CATALOGUE{de}> does not change the output for a user whose environment
+says C<en_GB>.  See L<App::WebPerimeterScan::I18N/language>.
+
+=item * B<Keep every placeholder.>  A translation that leaves out C<{host}>
+loses that value, with no warning.  A translation that adds a placeholder
+the code does not pass shows it as C<{name}>.
+
+=item * B<A finding needs both C<.title> and C<.detail>.>  The test
+F<t/i18n.t> fails when the code uses a rule id that does not have them.
+
+=item * B<C<%CATALOGUE> is a normal hash.>  Any code can change it at any
+time, and the change is seen by every later message.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * This file is ASCII, and the English catalogue is ASCII.
+
+=item * A translation may use any UTF-8 text, including emoji.  Write it as
+UTF-8 bytes, as F<Messages.pm> does: do not add C<use utf8>.  The reason is
+explained in L<App::WebPerimeterScan::I18N/ENCODING>.
+
+=item * A translation added at run time from a decoded source (for example
+a JSON file read with C<decode_json>) is made of character strings.
+Encode each string to UTF-8 bytes before you add it.
+
+=back
 
 =head1 LIMITATIONS
 
 Only English (C<en>) is provided.
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+The catalogue is data, not code.  This schema states the rules it must
+follow.  F<t/i18n.t> checks the last two for every key the code uses.
+The symbols are explained in
+L<App::WebPerimeterScan::I18N/FORMAL SPECIFICATION>.  C<MESSAGE ::= ...>
+defines a type with three kinds of value; the double angle brackets hold
+the data each kind carries.
+
+=head2 CATALOGUE
+
+	┌─ Catalogue ─────────────────────────────────────────
+	│ CATALOGUE : LANGUAGE ⇸ (KEY ⇸ MESSAGE)
+	│ MESSAGE ::= text⟨⟨STRING⟩⟩
+	│           | plural⟨⟨NAME × (FORM ⇸ MESSAGE)⟩⟩
+	│           | select⟨⟨NAME × (FORM ⇸ MESSAGE)⟩⟩
+	├─────────────────────────────────────────────────────
+	│ en ∈ dom CATALOGUE
+	│ ∀ k : used_keys • k ∈ dom CATALOGUE(en)
+	│ ∀ r : rule_ids • r.title ∈ dom CATALOGUE(en)
+	│                ∧ r.detail ∈ dom CATALOGUE(en)
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The catalogue is filled once, when the module is loaded.  After that it
+changes only when some code assigns to it.
+
+	  use App::WebPerimeterScan::Messages
+	        |
+	        v
+	  +----------------+
+	  |  ENGLISH ONLY  |  CATALOGUE = { en => { ... } }
+	  +----------------+
+	        |
+	        |  code assigns $CATALOGUE{xx} = { ... }
+	        v
+	  +----------------+
+	  | MORE LANGUAGES |  CATALOGUE = { en => ..., xx => ... }
+	  +----------------+
+	        |      ^
+	        +------+  code adds or changes a key, or another language
+
+	Every i18n() call reads the catalogue as it is at that moment.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

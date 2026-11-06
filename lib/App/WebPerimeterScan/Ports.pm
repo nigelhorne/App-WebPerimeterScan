@@ -100,18 +100,53 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
+Scan the default list of ports and print what answered:
+
+	use App::WebPerimeterScan::Ports;
+
 	my $scan = App::WebPerimeterScan::Ports->scan(host => 'example.com');
+	die "scan failed: $scan->{error}\n" if $scan->{error};
+
 	for my $open (@{ $scan->{open} }) {
 		print "$open->{port} $open->{banner}\n";
 	}
 
+Check only a few ports, quickly, without reading greetings:
+
+	my $web = App::WebPerimeterScan::Ports->scan(
+		host    => 'example.com',
+		ports   => [ 80, 443, 8443 ],
+		timeout => 1,
+		banner  => 0,
+	);
+	my %is_open = map { $_->{port} => 1 } @{ $web->{open} };
+	print "HTTPS is reachable\n" if $is_open{443};
+
+Check the scope before you scan.  This module does not do it for you:
+
+	$scope->assert_target_allowed($host);
+	my $result = App::WebPerimeterScan::Ports->scan(host => $host);
+
 =head1 DESCRIPTION
 
-Opens every socket in one non-blocking batch and waits on a single select,
-so a full pass over the default port list costs one timeout rather than one
-timeout per port.  A short banner read follows, because an SSH or SMTP
-greeting is often the difference between "a port is open" and "this is a
-seven-year-old OpenSSH".
+This module finds out which TCP ports on a host accept a connection.  It
+tries to connect to each port.  It does not send any data except to read a
+greeting.
+
+All the connections are started at the same time, and the module waits for
+all of them together.  So a scan of the whole default list takes about one
+C<timeout>, not one C<timeout> for each port.
+
+For each open port, the module then makes one more short connection and
+reads the first line the service sends, if it sends one.  This line is
+called the I<banner>.  A banner such as C<SSH-2.0-OpenSSH_7.4> often tells
+you the software and its version, which is how an old, unpatched service
+is found.
+
+The default list of ports is in C<@App::WebPerimeterScan::Ports::DEFAULT_PORTS>.
+It contains the usual web, mail, file-sharing, remote-desktop and database
+ports.  C<%App::WebPerimeterScan::Ports::RISKY> gives the severity of
+each port that should not be open to the internet.
 
 =head1 REQUIREMENTS
 
@@ -181,19 +216,6 @@ Returned in C<error>, not thrown:
 	------------------------  -------------------------------------------
 	cannot resolve 'H'        H has no IPv4 address; check the name.
 	no tcp protocol           The system has no "tcp" protocol entry.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Scan ──────────────────────────────────────────────
-	│ host? : HOST; ports? : ℙ PORT; result! : SCANRESULT
-	├─────────────────────────────────────────────────────
-	│ resolve(host?) = ∅ ⇒ result!.error ≠ ⊥ ∧ result!.open = ⟨⟩
-	│ resolve(host?) ≠ ∅ ⇒
-	│   ran(port ∘ result!.open) =
-	│       { p : ports? ∩ 1 .. 65535 | handshake(host?, p) completes
-	│                                   within timeout }
-	│   ∧ result!.open is sorted by port
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -396,6 +418,58 @@ sub _banner :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<The scope is not checked here.>  C<scan> connects to any host it
+is given.  Call C<< $scope->assert_target_allowed($host) >> first.  The
+main scanner, L<App::WebPerimeterScan>, always does.
+
+=item * B<Not in C<open> does not mean closed.>  A port that refused the
+connection and a port behind a firewall that dropped it look the same: both
+are missing from C<open>.
+
+=item * B<Check C<error> first.>  When the host name cannot be resolved,
+C<error> says so and C<open> is empty.  An empty C<open> with no C<error>
+means that the scan ran and nothing answered.
+
+=item * B<Bad port numbers are dropped without a warning.>  Ports outside
+1 to 65535 are ignored.  If no valid port is left, C<open> is empty.
+
+=item * B<C<timeout> is for the whole batch.>  It is not for each port.  A
+long list on a slow network may need a larger value.
+
+=item * B<The banner is an empty string, not C<undef>, when there is none.>
+Many services (HTTP, for example) wait for the client to speak first and
+send no greeting.  With C<< banner => 0 >> every banner is empty.
+
+=item * B<A banner is a claim, not a fact.>  A service can send any text.
+Use it as a hint about the software, not as proof of the version.
+
+=item * B<It is a class method.>  Call it as
+C<< App::WebPerimeterScan::Ports->scan(...) >>.  There is no object to
+create.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * C<host> must be an ASCII host name or an IPv4 address.  Write an
+international name in its Punycode form.
+
+=item * Banners are cleaned so that they are always safe to print: line
+breaks become spaces, every byte that is not printable ASCII is removed,
+and the text is cut to 120 characters.  So a banner never contains UTF-8,
+emoji or control characters, and the non-ASCII part of a greeting is lost.
+
+=item * C<error> is a message for people, from the message catalogue.  Do
+not compare it with a fixed string.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -415,8 +489,124 @@ slow link can time out ports that a longer wait would have found open.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 scan
+
+	┌─ Scan ──────────────────────────────────────────────
+	│ host? : HOST; ports? : ℙ PORT; result! : SCANRESULT
+	├─────────────────────────────────────────────────────
+	│ resolve(host?) = ∅ ⇒ result!.error ≠ ⊥ ∧ result!.open = ⟨⟩
+	│ resolve(host?) ≠ ∅ ⇒
+	│   ran(port ∘ result!.open) =
+	│       { p : ports? ∩ 1 .. 65535 | handshake(host?, p) completes
+	│                                   within timeout }
+	│   ∧ result!.open is sorted by port
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The module keeps no state between calls.  The diagram shows the life of
+one call to C<scan>, and then the states each port can be in during it.
+
+The call:
+
+	  scan(host, ports, timeout, banner)
+	        |
+	        v
+	  +-------------+
+	  |  VALIDATE   |--- unknown argument, or no host
+	  +-------------+       -> croak
+	        |
+	        v
+	  +-------------+
+	  |   RESOLVE   |--- the name has no IPv4 address
+	  +-------------+       -> result { error, open => [] }
+	        |
+	        |  ports outside 1..65535 removed
+	        v
+	  +-------------+
+	  |  CONNECT    |  all ports at once (non-blocking), or one at a
+	  +-------------+  time where non-blocking sockets are not available
+	        |
+	        |  each port ends as OPEN or NOT OPEN (below)
+	        v
+	  +-------------+
+	  |   BANNERS   |  only when banner = 1: one more connection to
+	  +-------------+  each OPEN port; read for up to 0.6 seconds
+	        |
+	        v
+	  result { host, open => [ { port, banner }, ... ] sorted by port }
+
+Each port during CONNECT:
+
+	                  connect started
+	                        |
+	                        v
+	                 +-------------+
+	                 |   PENDING   |
+	                 +-------------+
+	                   |    |     |
+	   handshake done, |    |     |  timeout reached
+	   no socket error |    |     |  (no answer: often a firewall)
+	                   |    |     +--------------------+
+	                   v    |                          v
+	          +-----------+ |  refused or      +-------------+
+	          |   OPEN    | |  other error     |  NOT OPEN   |
+	          +-----------+ +----------------->+-------------+
+	                |
+	                |  banner = 1
+	                v
+	          +-----------+
+	          | BANNER    |  first line of the greeting, cleaned;
+	          | READ      |  empty when the service says nothing
+	          +-----------+
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

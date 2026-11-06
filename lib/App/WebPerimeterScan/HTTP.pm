@@ -75,24 +75,71 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
-	my $http = App::WebPerimeterScan::HTTP->new(delay => 0.5);
+Fetch a page and check for an error first:
+
+	use App::WebPerimeterScan::HTTP;
+
+	my $http = App::WebPerimeterScan::HTTP->new;
 	my $res = $http->fetch('https://example.com/');
-	print $res->{status}, "\n" unless $res->{error};
-	print $http->header($res, 'server') // '', "\n";
+
+	if($res->{error}) {
+		print "failed: $res->{error}\n";
+	} else {
+		print "$res->{status} $res->{reason}\n";
+		print 'Server: ', $http->header($res, 'Server') // '(none)', "\n";
+	}
+
+Read every C<Set-Cookie> header separately:
+
+	for my $cookie (@{ $res->{set_cookie} || [] }) {
+		print "cookie: $cookie\n";
+	}
+
+Send an C<OPTIONS> request with an extra header:
+
+	my $options = $http->fetch('https://example.com/',
+		method  => 'OPTIONS',
+		headers => [ 'Origin: https://evil.example' ],
+	);
+	print $http->header($options, 'Allow') // '', "\n";
+
+Follow a redirect yourself, only when the target is in scope:
+
+	my $first = $http->fetch('http://example.com/');
+	my $next  = $http->header($first, 'Location');
+	if(defined $next && $scope->allows(URI->new($next)->host)) {
+		my $second = $http->fetch($next);
+	}
 
 =head1 DESCRIPTION
 
-A deliberately small HTTP client, hand-rolled rather than L<LWP> or
-L<HTTP::Tiny> for two reasons: every C<Set-Cookie> header is needed
-separately (those modules join them, and C<Expires> contains commas so the
-join cannot be undone), and the raw status line is wanted with no automatic
-redirects, so the caller decides which hops are in scope.
+This is a small HTTP client made for the scanner.  It sends one request and
+returns the response as a hash reference.  It is written for this module,
+instead of using L<LWP> or L<HTTP::Tiny>, for two reasons:
 
-It throttles per host so a scan does not look like a denial of service.
+=over 4
 
-TLS certificates are not verified at this layer so that a site with an
-expired or mismatched certificate can still be inspected; the verification
-result is reported separately by L<App::WebPerimeterScan::TLS>.
+=item * The scanner must see every C<Set-Cookie> header separately.  Those
+modules join repeated headers with commas, and a cookie's C<Expires> date
+also contains a comma, so the join cannot be undone.
+
+=item * The scanner must see redirects, not follow them.  The caller then
+decides if the next host is in scope.
+
+=back
+
+The client waits between two requests to the same host (the C<delay>), so
+that a scan does not overload the server.
+
+The client does B<not> check TLS certificates.  This is on purpose: a site
+with an expired or wrong certificate can still be scanned.  The certificate
+is checked, and reported, by L<App::WebPerimeterScan::TLS>.  Do not use this
+client to send anything secret.
+
+Network problems are returned, not thrown: when a request fails, the result
+has an C<error> field and no C<status>.  Only a programming mistake (an
+unknown argument, or a C<method> that is not made only of upper-case
+letters A to Z) is fatal.
 
 =head1 REQUIREMENTS
 
@@ -140,15 +187,6 @@ Usage: C<< my $http = App::WebPerimeterScan::HTTP->new(timeout => 5); >>
 	-------------------------------  -----------------------------------
 	Parameter 'X' ... (fatal)        A value is negative or not a number.
 	Unknown parameter 'X' (fatal)    A misspelt argument name.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ InitHTTP ──────────────────────────────────────────
-	│ HTTP'; timeout?, delay? : ℝ; max_size? : ℕ₁
-	├─────────────────────────────────────────────────────
-	│ timeout? ≥ 0 ∧ delay? ≥ 0
-	│ requests' = 0 ∧ last' = ∅
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -206,14 +244,6 @@ Usage: C<< printf "Requests: %d\n", $http->requests; >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Requests ──────────────────────────────────────────
-	│ ΞHTTP; result! : ℕ
-	├─────────────────────────────────────────────────────
-	│ result! = requests
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -282,18 +312,6 @@ These are returned in C<error>, not thrown:
 	                              while sending.
 	no response headers           Nothing usable arrived before timeout.
 	malformed status line         The reply was not HTTP/1.x.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Fetch ─────────────────────────────────────────────
-	│ ΔHTTP; url? : URL; method? : TOKEN; res! : RESPONSE
-	├─────────────────────────────────────────────────────
-	│ scheme(url?) ∈ {http, https} ∧ host(url?) ≠ ∅
-	│ now − last(host(url?)) ≥ delay        (after any sleep)
-	│ connected ⇒ requests' = requests + 1
-	│ ¬ connected ⇒ requests' = requests ∧ error ∈ dom res!
-	│ #res!.body ≤ max_size
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -375,16 +393,6 @@ Usage: C<< my $server = $http->header($res, 'Server'); >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Header ────────────────────────────────────────────
-	│ response? : RESPONSE; name? : STRING; result! : STRING ∪ {⊥}
-	├─────────────────────────────────────────────────────
-	│ n = lower(name?)
-	│ n ∈ dom response?.headers ⇒ result! = last(response?.headers(n))
-	│ n ∉ dom response?.headers ⇒ result! = ⊥
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -794,6 +802,72 @@ sub _read_chunked :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Check C<error> before C<status>.>  A failed request (no
+connection, a timeout, a reply that is not HTTP) returns a hash with
+C<error> and no C<status>.  It does not die.
+
+=item * B<Redirects are not followed.>  A C<301> or C<302> is returned as
+it is.  Read the C<Location> header and decide yourself.
+
+=item * B<The body may be cut short.>  Only the first C<max_size> bytes
+(2,000,000 by default) are kept.  C<truncated> is true when the rest was
+thrown away.
+
+=item * B<C<header> returns only the last value.>  When a header appears
+more than once, C<header($res, $name)> returns the last one.  The full list
+is in C<< $res->{headers}{$name} >>, where C<$name> must be lower case.
+C<header> itself ignores case.
+
+=item * B<C<header> returns C<undef> when the header is missing, and also
+for a failed request.>  Write C<< $http->header($res, 'Server') // '' >>
+when you need a string.
+
+=item * B<The delay belongs to one object.>  Two C<HTTP> objects do not
+wait for each other.  Use one object for the whole scan.
+
+=item * B<A delay of 0 turns the wait off.>  Use it in tests only.  Do not
+use it against a real site.
+
+=item * B<C<requests> counts connections that opened.>  A request that
+failed before it connected is not counted.
+
+=item * B<The certificate is not checked.>  See L</DESCRIPTION>.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * B<URLs must be ASCII.>  Percent-encode non-ASCII characters in the
+path and query (C<%C3%A9> for C<E<eacute>> in UTF-8), and write an
+international host name in its Punycode form.  A URL that contains raw
+UTF-8 bytes is encoded a second time and asks for the wrong path.
+
+=item * B<The body is bytes.>  C<body> is exactly what the server sent,
+after removing chunked transfer encoding.  It is not decoded from its
+character set, and a compressed body is not uncompressed (the client does
+not ask for compression).  To read the text, decode it yourself with the
+charset in C<content_type>.
+
+=item * B<Header values are bytes.>  Most are ASCII.  A server that puts
+UTF-8 in a header value gives you the UTF-8 bytes.
+
+=item * B<Extra request headers are sent as given.>  Pass them as ASCII
+byte strings.  A header that contains a carriage return or a line feed is
+dropped, so it cannot add another header.
+
+=item * B<C<error> is a message for people.>  It comes from the message
+catalogue and may contain the operating system's text in the language of
+the current locale.  Do not compare it with a fixed string; test only
+whether it is true.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -810,8 +884,148 @@ C<Host> header does not bracket it.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 new
+
+	┌─ InitHTTP ──────────────────────────────────────────
+	│ HTTP'; timeout?, delay? : ℝ; max_size? : ℕ₁
+	├─────────────────────────────────────────────────────
+	│ timeout? ≥ 0 ∧ delay? ≥ 0
+	│ requests' = 0 ∧ last' = ∅
+	└─────────────────────────────────────────────────────
+
+=head2 requests
+
+	┌─ Requests ──────────────────────────────────────────
+	│ ΞHTTP; result! : ℕ
+	├─────────────────────────────────────────────────────
+	│ result! = requests
+	└─────────────────────────────────────────────────────
+
+=head2 fetch
+
+	┌─ Fetch ─────────────────────────────────────────────
+	│ ΔHTTP; url? : URL; method? : TOKEN; res! : RESPONSE
+	├─────────────────────────────────────────────────────
+	│ scheme(url?) ∈ {http, https} ∧ host(url?) ≠ ∅
+	│ now − last(host(url?)) ≥ delay        (after any sleep)
+	│ connected ⇒ requests' = requests + 1
+	│ ¬ connected ⇒ requests' = requests ∧ error ∈ dom res!
+	│ #res!.body ≤ max_size
+	└─────────────────────────────────────────────────────
+
+=head2 header
+
+	┌─ Header ────────────────────────────────────────────
+	│ response? : RESPONSE; name? : STRING; result! : STRING ∪ {⊥}
+	├─────────────────────────────────────────────────────
+	│ n = lower(name?)
+	│ n ∈ dom response?.headers ⇒ result! = last(response?.headers(n))
+	│ n ∉ dom response?.headers ⇒ result! = ⊥
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The object keeps two pieces of state: C<requests>, the number of
+connections that opened, and the time of the last request to each host.
+Each call to C<fetch> goes through the steps below.  A step that fails ends
+the call with a result that has an C<error> field.
+
+	  new(timeout, delay, max_size)
+	        |
+	        v
+	  +-------------+
+	  |    READY    |  requests = 0 at first; no host seen yet
+	  +-------------+
+	        |
+	        |  fetch(url, method, headers)
+	        v
+	  +-------------+
+	  |  VALIDATE   |--- bad method or unknown argument
+	  +-------------+       -> croak; back to READY, no change
+	        |
+	        |---------- URL not http or https, or it has no host
+	        |              -> result {error}; back to READY
+	        v
+	  +-------------+
+	  |    WAIT     |  sleep until 'delay' seconds have passed since
+	  +-------------+  the last request to this host; then record the
+	        |          time of this request for the host
+	        v
+	  +-------------+
+	  |   CONNECT   |--- refused, timeout, or TLS handshake failed
+	  +-------------+       -> result {error}; back to READY
+	        |
+	        |  connected: requests = requests + 1
+	        v
+	  +-------------+
+	  |    SEND     |--- write failed or timed out
+	  +-------------+       -> result {error}; back to READY
+	        |
+	        |  request line, Host, User-Agent and extra headers sent
+	        v
+	  +-------------+
+	  |  READ HEAD  |--- no blank line within 64 KiB or before the
+	  +-------------+    deadline, or a status line that is not HTTP
+	        |               -> result {error}; back to READY
+	        v
+	  +-------------+
+	  |  READ BODY  |  by Content-Length, by chunks, or to the end of
+	  +-------------+  the stream; stop at max_size (truncated = 1);
+	        |          no body for HEAD, 1xx, 204 or 304
+	        v
+	  result {status, headers, body, ...}; back to READY
+
+	The connection is closed before fetch returns, on every path after
+	CONNECT.
+
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

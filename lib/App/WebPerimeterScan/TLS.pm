@@ -68,16 +68,58 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
-	my $tls = App::WebPerimeterScan::TLS->inspect(host => 'example.com', port => 443);
-	printf "expires in %d days using %s\n", $tls->{days_left}, $tls->{protocol}
-		if $tls->{ok} && defined $tls->{days_left};
+Check when the certificate expires:
+
+	use App::WebPerimeterScan::TLS;
+
+	my $tls = App::WebPerimeterScan::TLS->inspect(host => 'example.com');
+	if($tls->{ok} && defined $tls->{days_left}) {
+		printf "expires in %d days\n", $tls->{days_left};
+	}
+
+Check that a browser would trust the certificate:
+
+	if(!$tls->{ok}) {
+		print "no TLS handshake: $tls->{error}\n";
+	} elsif(defined $tls->{verify_error}) {
+		print "not trusted: $tls->{verify_error}\n";
+	} else {
+		print "trusted; $tls->{protocol} with $tls->{cipher}\n";
+	}
+
+Find old protocol versions that the server still accepts, on a port that
+is not 443:
+
+	my $mail = App::WebPerimeterScan::TLS->inspect(host => 'mail.example.com', port => 993);
+	my @old = grep { $_ eq 'TLSv1' || $_ eq 'TLSv1_1' } @{ $mail->{protocols} };
+	print "old protocols: @old\n" if @old;
 
 =head1 DESCRIPTION
 
-Performs one handshake to read the certificate and the negotiated cipher,
-one with verification enabled to see whether a browser would trust the
-chain, and one per protocol version to see which of TLS 1.0, 1.1, 1.2 and
-1.3 the server still accepts: six handshakes in all.
+This module connects to a TLS service (for example HTTPS on port 443) and
+describes it.  It answers four questions:
+
+=over 4
+
+=item 1. Which certificate does the server send?  The subject, issuer,
+fingerprint and expiry date are read, without checking if the certificate
+is trusted.
+
+=item 2. Would a browser trust it?  A second handshake checks the
+certificate chain and the host name.  Any problem is put in
+C<verify_error>.
+
+=item 3. Which protocol and cipher does the server choose by default?
+
+=item 4. Which protocol versions does the server accept?  One handshake is
+tried for each of TLS 1.0, 1.1, 1.2 and 1.3.  The names in C<protocols>
+are C<TLSv1>, C<TLSv1_1>, C<TLSv1_2> and C<TLSv1_3>.
+
+=back
+
+That is up to six handshakes for each call.  The host name is sent in
+every handshake (as SNI), so a server that hosts many sites sends the
+certificate for this one.
 
 =head1 REQUIREMENTS
 
@@ -152,19 +194,6 @@ Returned in C<error> or C<verify_error>, not thrown:
 	                                   IO::Socket::SSL's reason.
 	certificate verification failed    Verification failed and OpenSSL
 	                                   gave no more specific reason.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Inspect ───────────────────────────────────────────
-	│ host? : HOST; port? : PORT; result! : TLSRESULT
-	├─────────────────────────────────────────────────────
-	│ ran result!.protocols = { v : VERSIONS | handshake_v(host?, port?, v) }
-	│ ¬ handshake(host?, port?) ⇒ result!.error ≠ ⊥ ∧ result!.ok = ⊥
-	│ handshake(host?, port?) ⇒
-	│     result!.ok = 1
-	│   ∧ (result!.verify_error = ⊥ ⇔ chain_valid(host?, port?))
-	│   ∧ (expiry known ⇒ result!.days_left = ⌊(not_after − now) ÷ 86400⌋)
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -416,6 +445,59 @@ sub _parse_asn1_time :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<C<ok> does not mean "trusted".>  C<ok> is 1 when a handshake
+worked, even with an expired or self-signed certificate.  The certificate
+is trusted only when C<ok> is 1 I<and> C<verify_error> is C<undef>.
+
+=item * B<C<verify_error> is also C<undef> when C<ok> is not set.>  When
+the first handshake fails, no verification is tried.  Always test C<ok>
+first.
+
+=item * B<C<days_left> may be missing.>  When the expiry date cannot be
+read, C<days_left>, C<expires_at> and C<not_after> are not set.  Test with
+C<defined>.  C<days_left> is negative after the certificate has expired.
+
+=item * B<C<protocols> is filled in even when C<ok> is not set.>  A server
+that speaks only TLS 1.0 fails the default handshake (modern OpenSSL will
+not choose TLS 1.0) but still shows C<TLSv1> in C<protocols>.
+
+=item * B<A missing version is not proof.>  If the local OpenSSL was built
+without TLS 1.0, a server that accepts TLS 1.0 is not detected.  See
+L</LIMITATIONS>.
+
+=item * B<The scope is not checked here.>  Check it before you call
+C<inspect>, as the main scanner does.
+
+=item * B<It is a class method.>  Call it as
+C<< App::WebPerimeterScan::TLS->inspect(...) >>.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * C<host> must be an ASCII host name or an IP address.  Write an
+international name in its Punycode form; the same form is sent as SNI and
+used for the name check.
+
+=item * C<subject> and C<issuer> are the names from the certificate, as
+OpenSSL prints them (for example C</CN=example.com/O=Example Ltd>).  A
+name with non-ASCII characters is returned in OpenSSL's escaped form, not
+as UTF-8.
+
+=item * C<fingerprint>, C<protocol>, C<cipher> and the C<protocols> names
+are always ASCII.
+
+=item * C<error> and C<verify_error> are messages for people.  They may
+contain OpenSSL's English text.  Do not compare them with a fixed string.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -437,8 +519,105 @@ not by enumerating every suite the server accepts.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 inspect
+
+	┌─ Inspect ───────────────────────────────────────────
+	│ host? : HOST; port? : PORT; result! : TLSRESULT
+	├─────────────────────────────────────────────────────
+	│ ran result!.protocols = { v : VERSIONS | handshake_v(host?, port?, v) }
+	│ ¬ handshake(host?, port?) ⇒ result!.error ≠ ⊥ ∧ result!.ok = ⊥
+	│ handshake(host?, port?) ⇒
+	│     result!.ok = 1
+	│   ∧ (result!.verify_error = ⊥ ⇔ chain_valid(host?, port?))
+	│   ∧ (expiry known ⇒ result!.days_left = ⌊(not_after − now) ÷ 86400⌋)
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+The module keeps no state between calls.  One call to C<inspect> goes
+through these steps.  Every step makes its own connection.
+
+	  inspect(host, port, timeout)
+	        |
+	        v
+	  +---------------+
+	  |   VALIDATE    |--- unknown argument, or no host
+	  +---------------+       -> croak
+	        |
+	        v
+	  +---------------+
+	  |   HANDSHAKE   |  default settings; certificate not checked
+	  +---------------+
+	     |          |
+	     | failed   | worked
+	     |          v
+	     |    +---------------+
+	     |    |   DESCRIBE    |  ok = 1; protocol, cipher, subject,
+	     |    +---------------+  issuer, fingerprint, self_signed;
+	     |          |            expiry when it can be read
+	     |          v
+	     |    +---------------+
+	     |    |    VERIFY     |  second handshake that checks the chain
+	     |    +---------------+  and the name; verify_error = undef if
+	     |          |            trusted, else the reason
+	     |          |
+	     | error =  |
+	     | reason   |
+	     v          v
+	  +---------------------+
+	  |   PROBE VERSIONS    |  one handshake each for TLSv1, TLSv1_1,
+	  +---------------------+  TLSv1_2 and TLSv1_3; each that works is
+	        |                  added to protocols
+	        v
+	  result { host, port, protocols, ok or error, ... }
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

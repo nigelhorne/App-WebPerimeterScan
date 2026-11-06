@@ -71,30 +71,73 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
+Record a finding whose text comes from the message catalogue.  This is what
+the scanner's own rules do:
+
 	use App::WebPerimeterScan::Findings;
 
 	my $findings = App::WebPerimeterScan::Findings->new;
 
-	# Text comes from the message catalogue, keyed by the rule id
 	$findings->report('csp-missing',
 		severity => 'medium',
 		host     => 'example.com',
 		vars     => { url => 'https://example.com/' },
 	);
 
+Record a finding with your own text, for example from a site-specific
+check that has no catalogue entry:
+
+	$findings->add(
+		id       => 'staging-banner',
+		severity => 'low',
+		host     => 'example.com',
+		title    => 'The staging banner is visible in production',
+		fix      => 'Remove the banner from the production template.',
+	);
+
+Print a summary, worst finding first:
+
 	printf "%d finding(s), %d medium\n",
 		$findings->count, $findings->counts->{medium};
 
-	print "$_->{severity} $_->{title}\n" for @{ $findings->sorted };
+	for my $finding (@{ $findings->sorted }) {
+		print "$finding->{severity}  $finding->{title}\n";
+	}
 
-	exit 1 if @{ $findings->at_or_above('high') };
+Use the findings as a gate in a deployment script:
+
+	my $serious = $findings->at_or_above('high');
+	if(@{$serious}) {
+		print STDERR scalar(@{$serious}), " serious finding(s); stopping\n";
+		exit 1;
+	}
 
 =head1 DESCRIPTION
 
-Findings are de-duplicated on (id, host, url, key) and sorted worst first so
-that successive runs can be diffed.  Each finding is a hash reference with
-the fields in C<@App::WebPerimeterScan::Findings::FIELDS>, every one a
-string (empty when not applicable).
+This module holds the results of a scan.  Each result is called a
+I<finding>: one problem, on one host, with a severity, a title and advice
+on how to fix it.
+
+The collection does two jobs:
+
+=over 4
+
+=item * It removes duplicates.  Two findings are the same when they have
+the same rule id, host, URL and C<key>.  The second one is ignored.
+
+=item * It sorts.  The worst severity comes first.  Findings with the same
+severity are sorted by host, then by title, then by URL.  The order is
+always the same, so the reports from two runs can be compared line by line.
+
+=back
+
+Each finding is a hash reference.  It has every field named in
+C<@App::WebPerimeterScan::Findings::FIELDS>, and every field is a string.
+A field that does not apply is the empty string, never C<undef>, so code
+that reads a finding never has to test for C<undef>.
+
+The severities, from worst to least, are C<critical>, C<high>, C<medium>,
+C<low> and C<info>.
 
 =head1 SUBROUTINES/METHODS
 
@@ -130,14 +173,6 @@ Usage: C<< my $findings = App::WebPerimeterScan::Findings->new; >>
 	Message                          Meaning / resolution
 	-------------------------------  -----------------------------------
 	Unknown parameter 'X'            new() takes no arguments.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ InitFindings ──────────────────────────────────────
-	│ Findings'
-	├─────────────────────────────────────────────────────
-	│ items' = ⟨⟩ ∧ seen' = ∅
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -207,19 +242,6 @@ Usage: C<< $findings->add(id => 'x', severity => 'low', title => 'X') >>
 	Unknown severity 'S' for finding 'I';      The severity is not one of
 	recorded as info (warning)                 critical/high/medium/low/info.
 	Unknown parameter 'X' (fatal)              A misspelt argument name.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Add ───────────────────────────────────────────────
-	│ ΔFindings
-	│ id?, severity?, host?, url?, key? : STRING; result! : {0, 1}
-	├─────────────────────────────────────────────────────
-	│ k = (id?, host?, url?, key?)
-	│ sev = if severity? ∈ SEVERITY then severity? else info
-	│ k ∈ seen ⇒ items' = items ∧ seen' = seen ∧ result! = 0
-	│ k ∉ seen ⇒ items' = items ⁀ ⟨finding(id?, sev, …)⟩
-	│          ∧ seen' = seen ∪ {k} ∧ result! = 1
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -317,18 +339,6 @@ Usage: C<< $findings->report('tls-expired', severity => 'high', host => $h, vars
 	No message is defined for "K"        The rule has no catalogue text; add
 	(fatal, with stack trace)            K to App::WebPerimeterScan::Messages.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Report ────────────────────────────────────────────
-	│ ΔFindings; ΞCatalogue
-	│ id?, base? : KEY; vars? : NAME ⇸ VALUE
-	├─────────────────────────────────────────────────────
-	│ b = if base? defined then base? else id?
-	│ b ⁀ ".title" ∈ dom catalogue ∧ b ⁀ ".detail" ∈ dom catalogue
-	│ Add[title? := i18n(b ⁀ ".title", vars?),
-	│     detail? := i18n(b ⁀ ".detail", vars?)]
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub report
@@ -415,15 +425,6 @@ Usage: C<< $findings->annotate($finding, file => '/srv/www/.env') >>
 	annotate() was given a finding that this  Pass a finding obtained from this
 	collection did not record (fatal)         object's all() or sorted().
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Annotate ──────────────────────────────────────────
-	│ ΔFindings; f? : FINDING; file?, source? : STRING
-	├─────────────────────────────────────────────────────
-	│ f? ∈ ran items
-	│ items' = items ⊕ {f? ↦ f? ⊕ {file ↦ file?, source ↦ source?}}
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub annotate
@@ -476,14 +477,6 @@ Usage: C<< for my $f (@{ $findings->all }) { ... } >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ All ───────────────────────────────────────────────
-	│ ΞFindings; result! : seq FINDING
-	├─────────────────────────────────────────────────────
-	│ result! = items
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub all
@@ -522,14 +515,6 @@ Usage: C<< print $findings->count >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Count ─────────────────────────────────────────────
-	│ ΞFindings; result! : ℕ
-	├─────────────────────────────────────────────────────
-	│ result! = #items
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -571,16 +556,6 @@ Usage: C<< for my $f (@{ $findings->sorted }) { ... } >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Sorted ────────────────────────────────────────────
-	│ ΞFindings; result! : seq FINDING
-	├─────────────────────────────────────────────────────
-	│ items bag_of result! ∧ #result! = #items
-	│ ∀ i : 1 .. #result! − 1 • key(result! i) ≤ key(result! (i + 1))
-	│ key(f) = (−rank(f.severity), f.host, f.title, f.url)
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -627,14 +602,6 @@ Usage: C<< my $high = $findings->counts->{high}; >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Counts ────────────────────────────────────────────
-	│ ΞFindings; result! : SEVERITY → ℕ
-	├─────────────────────────────────────────────────────
-	│ ∀ s : SEVERITY • result! s = #{ f : ran items | f.severity = s }
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub counts
@@ -679,15 +646,6 @@ Usage: C<< App::WebPerimeterScan::Findings::rank('high') >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Rank ──────────────────────────────────────────────
-	│ severity? : STRING; result! : 0 .. 5
-	├─────────────────────────────────────────────────────
-	│ severity? ∈ dom RANK ⇒ result! = RANK(severity?)
-	│ severity? ∉ dom RANK ⇒ result! = 0
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub rank
@@ -729,16 +687,6 @@ Usage: C<< exit 1 if @{ $findings->at_or_above('high') }; >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ AtOrAbove ─────────────────────────────────────────
-	│ ΞFindings; threshold? : STRING; result! : seq FINDING
-	├─────────────────────────────────────────────────────
-	│ threshold? ∉ dom RANK ⇒ result! = ⟨⟩
-	│ threshold? ∈ dom RANK ⇒
-	│     result! = items ↾ { f | RANK(f.severity) ≥ RANK(threshold?) }
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub at_or_above
@@ -768,6 +716,69 @@ sub _optional_text :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<A misspelt threshold matches nothing.>  C<at_or_above('hihg')>
+returns an empty list, with no warning, so a gate written as
+C<exit 1 if @{ $findings-E<gt>at_or_above($level) }> would pass.  Check
+the level first with C<rank($level)>, which returns 0 for an unknown
+severity.  The F<webperimeter> command does this for C<--fail-on>.
+
+=item * B<A misspelt severity becomes C<info>.>  C<add> and C<report>
+record a finding with an unknown severity as C<info> and print a warning.
+The finding is kept, but it is now below most C<--fail-on> levels.
+
+=item * B<C<undef> is stored as the empty string.>  Passing
+C<< host => undef >> is the same as not passing C<host>.  The only field
+that is filled in for you is C<title>, which becomes the rule id when it
+is empty.
+
+=item * B<An C<undef> placeholder value is shown, not hidden.>  In
+C<report>, C<< vars => { url => undef } >> leaves the text C<{url}> in the
+message.  This is on purpose: a visible C<{url}> shows that a value was
+missing.
+
+=item * B<C<all> and C<sorted> return a new list, but the same findings.>
+Adding to or removing from the returned array does not change the
+collection.  Changing a field of a finding in that array I<does> change the
+finding in the collection.  Use C<annotate> to change C<file> and
+C<source>, and do not change other fields.
+
+=item * B<The de-duplication key is exact.>  C<https://example.com/> and
+C<https://example.com> are different URLs, so the same problem on both is
+two findings.  The C<key> argument is part of the key but is not stored.
+
+=back
+
+=head1 ENCODING
+
+This module does not decode or encode text.  It stores exactly the strings
+it is given.
+
+=over 4
+
+=item * Any byte string is safe in any field, including UTF-8 text in any
+language and emoji.  The scanner itself always passes byte strings: text
+taken from a web page is the bytes the server sent.
+
+=item * Perl character strings (text with characters above 255, for
+example after C<decode('UTF-8', ...)>) are also stored correctly, but the
+report functions in L<App::WebPerimeterScan::Report> then return a
+character string.  Printing it to a handle with no C<:encoding> layer gives
+a "Wide character" warning.  Either encode the text to UTF-8 bytes before
+C<add>, or set C<binmode STDOUT, ':encoding(UTF-8)'> before printing.
+
+=item * Do not mix the two kinds of string in one collection.  A report
+that joins UTF-8 bytes with character strings encodes the bytes a second
+time, and C<E<eacute>> is printed as C<E<Atilde>E<copy>>.
+
+=item * Sorting compares strings with Perl's C<cmp>, which orders by
+character number, not by the rules of any language.
+
+=back
+
 =head1 LIMITATIONS
 
 =over 4
@@ -784,8 +795,194 @@ host-level ones.  Rules that are about the host pass an empty C<url>.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 new
+
+	┌─ InitFindings ──────────────────────────────────────
+	│ Findings'
+	├─────────────────────────────────────────────────────
+	│ items' = ⟨⟩ ∧ seen' = ∅
+	└─────────────────────────────────────────────────────
+
+=head2 add
+
+	┌─ Add ───────────────────────────────────────────────
+	│ ΔFindings
+	│ id?, severity?, host?, url?, key? : STRING; result! : {0, 1}
+	├─────────────────────────────────────────────────────
+	│ k = (id?, host?, url?, key?)
+	│ sev = if severity? ∈ SEVERITY then severity? else info
+	│ k ∈ seen ⇒ items' = items ∧ seen' = seen ∧ result! = 0
+	│ k ∉ seen ⇒ items' = items ⁀ ⟨finding(id?, sev, …)⟩
+	│          ∧ seen' = seen ∪ {k} ∧ result! = 1
+	└─────────────────────────────────────────────────────
+
+=head2 report
+
+	┌─ Report ────────────────────────────────────────────
+	│ ΔFindings; ΞCatalogue
+	│ id?, base? : KEY; vars? : NAME ⇸ VALUE
+	├─────────────────────────────────────────────────────
+	│ b = if base? defined then base? else id?
+	│ b ⁀ ".title" ∈ dom catalogue ∧ b ⁀ ".detail" ∈ dom catalogue
+	│ Add[title? := i18n(b ⁀ ".title", vars?),
+	│     detail? := i18n(b ⁀ ".detail", vars?)]
+	└─────────────────────────────────────────────────────
+
+=head2 annotate
+
+	┌─ Annotate ──────────────────────────────────────────
+	│ ΔFindings; f? : FINDING; file?, source? : STRING
+	├─────────────────────────────────────────────────────
+	│ f? ∈ ran items
+	│ items' = items ⊕ {f? ↦ f? ⊕ {file ↦ file?, source ↦ source?}}
+	└─────────────────────────────────────────────────────
+
+=head2 all
+
+	┌─ All ───────────────────────────────────────────────
+	│ ΞFindings; result! : seq FINDING
+	├─────────────────────────────────────────────────────
+	│ result! = items
+	└─────────────────────────────────────────────────────
+
+=head2 count
+
+	┌─ Count ─────────────────────────────────────────────
+	│ ΞFindings; result! : ℕ
+	├─────────────────────────────────────────────────────
+	│ result! = #items
+	└─────────────────────────────────────────────────────
+
+=head2 sorted
+
+	┌─ Sorted ────────────────────────────────────────────
+	│ ΞFindings; result! : seq FINDING
+	├─────────────────────────────────────────────────────
+	│ items bag_of result! ∧ #result! = #items
+	│ ∀ i : 1 .. #result! − 1 • key(result! i) ≤ key(result! (i + 1))
+	│ key(f) = (−rank(f.severity), f.host, f.title, f.url)
+	└─────────────────────────────────────────────────────
+
+=head2 counts
+
+	┌─ Counts ────────────────────────────────────────────
+	│ ΞFindings; result! : SEVERITY → ℕ
+	├─────────────────────────────────────────────────────
+	│ ∀ s : SEVERITY • result! s = #{ f : ran items | f.severity = s }
+	└─────────────────────────────────────────────────────
+
+=head2 rank
+
+	┌─ Rank ──────────────────────────────────────────────
+	│ severity? : STRING; result! : 0 .. 5
+	├─────────────────────────────────────────────────────
+	│ severity? ∈ dom RANK ⇒ result! = RANK(severity?)
+	│ severity? ∉ dom RANK ⇒ result! = 0
+	└─────────────────────────────────────────────────────
+
+=head2 at_or_above
+
+	┌─ AtOrAbove ─────────────────────────────────────────
+	│ ΞFindings; threshold? : STRING; result! : seq FINDING
+	├─────────────────────────────────────────────────────
+	│ threshold? ∉ dom RANK ⇒ result! = ⟨⟩
+	│ threshold? ∈ dom RANK ⇒
+	│     result! = items ↾ { f | RANK(f.severity) ≥ RANK(threshold?) }
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+A collection has one piece of state: the list of findings it holds, and the
+set of de-duplication keys it has seen.  It is either empty or it holds one
+or more findings.  Nothing ever removes a finding.
+
+	                     new()
+	                       |
+	                       v
+	              +-----------------+
+	              |      EMPTY      |   count = 0
+	              +-----------------+
+	                |      |      |
+	                |      |      |  all, sorted, counts, count,
+	                |      |      |  at_or_above, rank
+	                |      |      +-----> (no change; empty results)
+	                |      |
+	                |      |  annotate(any finding)
+	                |      +-----> croak: the finding is not in this
+	                |              collection (no change)
+	                |
+	                |  add / report with a new key
+	                |  -> finding appended; key remembered; returns 1
+	                v
+	              +-----------------+
+	        +---->|     HOLDING     |   count = n, n >= 1
+	        |     +-----------------+
+	        |       |    |    |    |
+	        |       |    |    |    +--- all, sorted, counts, count,
+	        |       |    |    |         at_or_above, rank
+	        |       |    |    |         -> (no change; new list returned)
+	        |       |    |    |
+	        |       |    |    +-------- annotate(a held finding)
+	        |       |    |              -> file / source fields set;
+	        |       |    |                 returns the collection
+	        |       |    |
+	        |       |    +------------- add / report with a key already seen
+	        |       |                   -> (no change); returns 0
+	        |       |
+	        +-------+  add / report with a new key
+	                   -> finding appended (count = n + 1); returns 1
+
+	Unknown severity on add / report: a warning is printed and the
+	finding is recorded as 'info'.  The state change is otherwise the
+	same as for a new key.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

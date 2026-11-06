@@ -99,25 +99,86 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
+From the command line, scan the hosts listed in F<scope.txt>:
+
+	webperimeter --scope scope.txt --authorized
+
+From Perl, scan and print the findings, worst first:
+
 	use App::WebPerimeterScan;
 	use App::WebPerimeterScan::Scope;
 
-	my $scope = App::WebPerimeterScan::Scope->new->load_file('scope.txt');
-	my $scanner = App::WebPerimeterScan->new(scope => $scope, depth => 1);
+	my $scope    = App::WebPerimeterScan::Scope->new->load_file('scope.txt');
+	my $scanner  = App::WebPerimeterScan->new(scope => $scope);
 	my $findings = $scanner->run;
 
 	print "$_->{severity} $_->{title}\n" for @{ $findings->sorted };
 
+Stop a deployment when the scan finds anything high or critical:
+
+	my $serious = App::WebPerimeterScan->new(scope => $scope)->run->at_or_above('high');
+	die scalar(@{$serious}) . " serious finding(s)\n" if @{$serious};
+
+A fast scan of only the web ports, without the sensitive-path probes:
+
+	my $quick = App::WebPerimeterScan->new(
+		scope       => $scope,
+		ports       => [ 80, 443 ],
+		max_urls    => 1,
+		path_probes => 0,
+	);
+
+Scan your own site and point each finding at the file and the code behind
+it.  Run this on the machine that serves the site:
+
+	my $full = App::WebPerimeterScan->new(
+		scope       => $scope,
+		docroots    => [ '/srv/www/example' ],
+		source_dirs => [ '/home/me/src/example/lib' ],
+	);
+	for my $finding (@{ $full->run->sorted }) {
+		print "$finding->{title}\n";
+		print "  file:   $finding->{file}\n"   if length $finding->{file};
+		print "  source: $finding->{source}\n" if length $finding->{source};
+	}
+
+Write an HTML report:
+
+	use App::WebPerimeterScan::Report;
+
+	open my $out, '>', 'report.html';
+	print $out App::WebPerimeterScan::Report::as_html($scanner->findings,
+		version => $App::WebPerimeterScan::VERSION,
+		hosts   => $scanner->host_reports,
+	);
+	close $out;
+
 =head1 DESCRIPTION
 
-An external, unauthenticated scan of hosts you own: which ports are reachable,
-what the TLS configuration allows, which security headers are missing, whether
-session cookies are protected, and whether well-known sensitive paths have been
-left in the document root.
+This tool looks at your own web servers from the outside, the way a
+stranger on the internet sees them.  It does not log in.  It answers these
+questions for each host:
 
-It deliberately does not attempt exploitation.  There is no payload
-injection, no credential guessing and no write request outside the single
-B<OPTIONS> probe, so it is safe to point at a production site.
+=over 4
+
+=item * Which TCP ports can be reached?
+
+=item * Is the TLS certificate valid, and are old protocol versions still
+accepted?
+
+=item * Which security headers are missing, and are the session cookies
+protected?
+
+=item * Has a sensitive file, such as F<.git/config> or F<.env>, been left
+where the web server will send it?
+
+=back
+
+The tool does not attack the site.  It does not inject code, does not guess
+passwords, and does not change any data: it sends only C<GET> requests,
+plus one C<OPTIONS> request for each host.  So it is safe to run against a
+production site.  (C<--reflection-probe> adds one more C<GET> with a
+harmless marker in the query string.)
 
 F<README.md> is generated from this POD by F<pod2github>: change the POD and
 regenerate, rather than editing the README by hand.
@@ -392,17 +453,6 @@ Usage: C<< my $scanner = App::WebPerimeterScan->new(scope => $scope); >>
 	Parameter 'scope' must be an object that  Pass an App::WebPerimeterScan::
 	understands the ... method (fatal)        Scope.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ InitScanner ───────────────────────────────────────
-	│ Scanner'; args? : NAME ⇸ VALUE
-	├─────────────────────────────────────────────────────
-	│ dom args? ⊆ dom config
-	│ ∀ k ∈ dom config • setting'(k) = (config ⊕ args?)(k)
-	│ findings' = ∅ ∧ hosts' = ∅
-	│ source' ≠ ⊥ ⇔ docroots? ≠ ⟨⟩ ∨ source_dirs? ≠ ⟨⟩
-	└─────────────────────────────────────────────────────
-
 =head3 PSEUDOCODE
 
 	validate the arguments
@@ -491,14 +541,6 @@ Usage: C<< my $count = $scanner->findings->count; >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ FindingsOf ────────────────────────────────────────
-	│ ΞScanner; result! : FINDINGS
-	├─────────────────────────────────────────────────────
-	│ result! = findings
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub findings
@@ -539,14 +581,6 @@ Usage: C<< printf "Requests: %d\n", $scanner->http->requests; >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ HttpOf ────────────────────────────────────────────
-	│ ΞScanner; result! : HTTP
-	├─────────────────────────────────────────────────────
-	│ result! = http
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -593,15 +627,6 @@ Usage: C<< my $hosts = $scanner->host_reports; >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ HostReports ───────────────────────────────────────
-	│ ΞScanner; result! : seq HOSTREPORT
-	├─────────────────────────────────────────────────────
-	│ ran result! = ran hosts
-	│ ∀ i : 1 .. #result! − 1 • result!(i).host < result!(i + 1).host
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -650,18 +675,6 @@ Usage: C<< my $findings = $scanner->run; >>
 	before it can send any traffic (fatal)
 	No concrete hosts in scope (only            The scope file lists only
 	wildcards?) (fatal)                         *.domain lines; add a host.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ Run ───────────────────────────────────────────────
-	│ ΔScanner; result! : FINDINGS
-	├─────────────────────────────────────────────────────
-	│ scope ≠ ⊥ ∧ hosts(scope) ≠ ⟨⟩
-	│ contacted' ⊆ { h | allows(scope, h) }
-	│ ∀ e ∈ ran hosts(scope) •
-	│     scanned(e) ∨ (scan-error, e.host) ∈ keys(findings')
-	│ result! = findings'
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -1248,6 +1261,85 @@ sub _random_token :Private
 
 __END__
 
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<Use a new object for each scan.>  C<run> adds to the same
+findings collection every time it is called, and C<host_reports> keeps the
+last details for each host.  A second C<run> on the same object gives the
+findings of both runs together.
+
+=item * B<A scope with only wildcard lines has nothing to scan.>
+C<*.example.com> lets the crawler follow links to those hosts, but is not
+a starting point.  C<run> dies with "No concrete hosts in scope" when the
+scope lists no concrete host.
+
+=item * B<C<run> dies only for a missing scope or an empty one.>  A host
+that is refused (not listed, or private), cannot be reached or fails
+during the scan does not stop the scan.  It is recorded as a C<scan-error>
+or C<host-unreachable> finding, at high severity, and the next host is
+scanned.  Look for those findings before you trust a clean result.
+
+=item * B<C<undef> means "use the default".>  C<< depth => undef >> is the
+same as leaving C<depth> out.  To turn something off, pass 0, for example
+C<< path_probes => 0 >>.
+
+=item * B<C<delay> protects the site.>  The default waits half a second
+between two requests to the same host.  Do not set it to 0 for a real
+site.
+
+=item * B<C<docroots> and C<source_dirs> are paths on this machine.>  They
+help only when this machine holds the files of the site being scanned.
+A path that does not exist is ignored without a warning.
+
+=item * B<Private addresses are refused by default.>  To scan a test server
+on C<127.0.0.1> or on your local network, create the scope with
+C<< App::WebPerimeterScan::Scope->new(allow_private => 1) >>, or pass
+C<--allow-private> to F<webperimeter>.
+
+=item * B<No findings is not proof of safety.>  The tool checks a fixed
+list of things.  See L</LIMITATIONS>.
+
+=item * B<Progress messages go to STDERR.>  With C<< verbose => 1 >>, the
+progress lines are printed to STDERR, so they never mix with a report on
+STDOUT.
+
+=back
+
+=head1 ENCODING
+
+The scanner works with bytes from start to end, and never decodes or
+encodes text itself.  In practice:
+
+=over 4
+
+=item * B<Web pages in any language are fine.>  Page text, titles and
+header values are kept as the bytes the server sent.  A UTF-8 page,
+including one with emoji, appears correctly in all three report formats.
+
+=item * B<Links with non-ASCII characters are followed correctly.>  A link
+written as raw UTF-8 and the same link written with C<%> escapes are the
+same URL to the crawler.
+
+=item * B<Host names in the scope file must be ASCII.>  Write an
+international domain name in its Punycode form.  See
+L<App::WebPerimeterScan::Scope/ENCODING>.
+
+=item * B<File and directory names are bytes.>  C<docroots>,
+C<source_dirs> and the paths in the findings are used exactly as the
+operating system gives them.
+
+=item * B<Messages come from the catalogue.>  They are English and ASCII
+today.  Error messages may contain the operating system's own text, in
+the language of your locale.
+
+=item * B<If you add your own findings or metadata, add bytes.>  Mixing
+Perl character strings with the scanner's byte strings encodes the bytes a
+second time.  See L<App::WebPerimeterScan::Findings/ENCODING>.
+
+=back
+
 =head1 LIMITATIONS
 
 These are the design weaknesses a reviewer should know about before relying
@@ -1302,8 +1394,197 @@ the access controls were added the code ran on 5.10.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 new
+
+	┌─ InitScanner ───────────────────────────────────────
+	│ Scanner'; args? : NAME ⇸ VALUE
+	├─────────────────────────────────────────────────────
+	│ dom args? ⊆ dom config
+	│ ∀ k ∈ dom config • setting'(k) = (config ⊕ args?)(k)
+	│ findings' = ∅ ∧ hosts' = ∅
+	│ source' ≠ ⊥ ⇔ docroots? ≠ ⟨⟩ ∨ source_dirs? ≠ ⟨⟩
+	└─────────────────────────────────────────────────────
+
+=head2 findings
+
+	┌─ FindingsOf ────────────────────────────────────────
+	│ ΞScanner; result! : FINDINGS
+	├─────────────────────────────────────────────────────
+	│ result! = findings
+	└─────────────────────────────────────────────────────
+
+=head2 http
+
+	┌─ HttpOf ────────────────────────────────────────────
+	│ ΞScanner; result! : HTTP
+	├─────────────────────────────────────────────────────
+	│ result! = http
+	└─────────────────────────────────────────────────────
+
+=head2 host_reports
+
+	┌─ HostReports ───────────────────────────────────────
+	│ ΞScanner; result! : seq HOSTREPORT
+	├─────────────────────────────────────────────────────
+	│ ran result! = ran hosts
+	│ ∀ i : 1 .. #result! − 1 • result!(i).host < result!(i + 1).host
+	└─────────────────────────────────────────────────────
+
+=head2 run
+
+	┌─ Run ───────────────────────────────────────────────
+	│ ΔScanner; result! : FINDINGS
+	├─────────────────────────────────────────────────────
+	│ scope ≠ ⊥ ∧ hosts(scope) ≠ ⟨⟩
+	│ contacted' ⊆ { h | allows(scope, h) }
+	│ ∀ e ∈ ran hosts(scope) •
+	│     scanned(e) ∨ (scan-error, e.host) ∈ keys(findings')
+	│ result! = findings'
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+A scanner object is created READY.  C<run> takes it through the steps
+below for each host, then to DONE.  C<findings>, C<http> and
+C<host_reports> can be called in any state and change nothing.
+
+The object:
+
+	  new(scope, options)
+	        |  unknown option or bad value -> croak (no object)
+	        v
+	  +-------------+
+	  |    READY    |  findings empty; no traffic sent
+	  +-------------+
+	        |
+	        |  run()
+	        |    no scope            -> croak "No scope was given"
+	        |    no concrete host    -> croak "No concrete hosts in scope"
+	        v
+	  +-------------+
+	  |  SCANNING   |  each host in scope->hosts, in turn (below)
+	  +-------------+
+	        |
+	        |  every host done
+	        v
+	  +-------------+
+	  | SOURCE PASS |  only with docroots or source_dirs: add file and
+	  +-------------+  source to findings; report sensitive files on disk
+	        |
+	        v
+	  +-------------+
+	  |    DONE     |  run() returns the findings collection
+	  +-------------+
+	        |
+	        |  run() again: SCANNING again; new findings are added to
+	        |  the same collection (see COMMON PITFALLS)
+	        v
+	      (SCANNING)
+
+One host, inside SCANNING.  Any croak inside these steps is caught, and
+becomes a C<scan-error> finding for that host:
+
+	  +-------------------+
+	  | AUTHORISE         |--- not listed, or private and not allowed
+	  +-------------------+       -> scan-error (high); next host
+	        |
+	        v
+	  +-------------------+
+	  | PORT SCAN         |  open ports and banners -> port findings
+	  +-------------------+
+	        |
+	        v
+	  +-------------------+
+	  | FETCH ROOT        |--- neither https:// nor http:// answered
+	  +-------------------+       -> host-unreachable (high); next host
+	        |
+	        |  the first that answered becomes the base URL
+	        v
+	  +-------------------+
+	  | INSPECT TLS       |  on the HTTPS port, if one is open
+	  +-------------------+
+	        |
+	        v
+	  +-------------------+
+	  | SAME-ORIGIN       |  CORS probe and OPTIONS probe
+	  | PROBES            |
+	  +-------------------+
+	        |
+	        v
+	  +-------------------+
+	  | PLAIN HTTP HOP    |  HTTPS base and no port in scope only: does
+	  +-------------------+  http:// redirect to https://?
+	        |
+	        v
+	  +-------------------+
+	  | CRAWL             |  breadth first, up to 'depth' links deep and
+	  +-------------------+  'max_urls' pages; only links that
+	        |                scope->allows; page rules on each page
+	        v
+	  +-------------------+
+	  | PATH PROBES       |  if path_probes: the sensitive paths,
+	  +-------------------+  compared with a not-found baseline
+	        |
+	        v
+	  +-------------------+
+	  | REFLECTION PROBE  |  if reflection: one GET with a marker
+	  +-------------------+
+	        |
+	        v
+	  +-------------------+
+	  | UNVISITED ROUTES  |  if source_dirs: routes the crawl never
+	  +-------------------+  reached
+	        |
+	        v
+	    next host
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

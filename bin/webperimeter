@@ -251,19 +251,136 @@ webperimeter - check your own web perimeter the way an outsider sees it
 	webperimeter --scope scope.txt --dry-run
 	webperimeter --help
 
+Scan every host in F<scope.txt> and print a text report:
+
+	webperimeter --scope scope.txt --authorized
+
+See what would be scanned, without sending anything to the hosts:
+
+	webperimeter --scope scope.txt --dry-run
+
+Save a JSON report, and fail a deployment job on any medium or worse
+finding:
+
+	webperimeter --scope scope.txt --authorized -f json -o report.json --fail-on medium
+
+A quick check of the web ports only, with no sensitive-path probes:
+
+	webperimeter --scope scope.txt --authorized --ports 80,443 --max-urls 1 --no-path-probes
+
+Scan a test server on this machine, and point findings at its files:
+
+	webperimeter --scope lab.txt --authorized --allow-private \
+	    --docroot /srv/www/lab --source ~/src/lab/lib
+
 =head1 DESCRIPTION
 
-The command-line front end to L<App::WebPerimeterScan>.  C<--help> lists
-every option.  The scope file is the authorisation boundary, and nothing is
-sent without C<--authorized>.
+This is the command-line front end to L<App::WebPerimeterScan>.
+C<--help> lists every option.
+
+The scope file lists the hosts you are allowed to test; its format is
+described in L<App::WebPerimeterScan::Scope>.  Nothing is sent to any host
+unless you also give C<--authorized>, which states that you have permission
+to test every host in the file.
+
+Every option is checked before any traffic is sent, so a typo stops the
+command at once instead of after a long scan.
 
 =head1 EXIT STATUS
 
-0 when nothing reached C<--fail-on>, 1 when something did, 2 for a usage or
-setup error.  Options are validated before any traffic is sent.
+	0  the scan ran, and nothing reached the --fail-on level
+	   (also for --help, --version and --dry-run)
+	1  the scan ran, and at least one finding reached the --fail-on level
+	2  the command line or the scope file is wrong, or --authorized is
+	   missing; nothing was sent
 
-=head1 LICENSE
+The default C<--fail-on> level is C<high>.  C<--fail-on never> always
+exits 0 after a scan.
 
-GPL2
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<C<--dry-run> still looks up names.>  It sends nothing to the
+hosts, but it resolves each name in DNS to show whether it is private.
+
+=item * B<Exit status 0 is not "secure".>  It means that no finding reached
+the C<--fail-on> level.  A host that could not be scanned is reported as
+C<scan-error> or C<host-unreachable> at high severity, so it fails the
+default level; with C<--fail-on critical> it does not.
+
+=item * B<C<--output> prints one line.>  With C<-o FILE>, the report goes
+to the file and "Report written to FILE" goes to STDOUT (not with
+C<--verbose>).
+
+=item * B<Colour is automatic.>  The text report is coloured when STDOUT is
+a terminal and C<-o> is not given.  Use C<--no-color> to turn it off, or
+C<--color> to force it.
+
+=item * B<Private addresses need C<--allow-private>.>  Without it, a host
+that resolves to C<127.0.0.1>, C<10.0.0.0/8> and the like is refused, and
+the refusal is a high-severity finding.
+
+=item * B<C<--docroot> and C<--source> must be directories on this
+machine.>  A path that is not a directory is a usage error (exit 2).
+
+=back
+
+=head1 ENCODING
+
+The reports are written as bytes, exactly as the scanner made them.  Text
+from web pages is UTF-8 when the site is, so the report is correct UTF-8
+for such sites; view it in a UTF-8 terminal.  The scope file must name hosts
+in ASCII; see L<App::WebPerimeterScan::Scope/ENCODING>.  Messages are in
+English; error messages from the operating system follow your locale.
+
+=head1 STATE DIAGRAM
+
+	  webperimeter [options]
+	        |
+	        v
+	  +----------------+
+	  | PARSE OPTIONS  |
+	  +----------------+
+	        |--- unknown option -> usage; exit 2
+	        |--- --help         -> help; exit 0
+	        |--- --version      -> version; exit 0
+	        v
+	  +----------------+
+	  | VALIDATE       |--- no --scope, bad --format, bad --fail-on,
+	  +----------------+    bad port, docroot or source not a directory
+	        |                 -> message; exit 2
+	        v
+	  +----------------+
+	  | LOAD SCOPE     |--- file unreadable, or no usable line
+	  +----------------+       -> message; exit 2
+	        |
+	        |--- --dry-run -> list hosts, ports and directories; exit 0
+	        v
+	  +----------------+
+	  | AUTHORISED?    |--- no --authorized -> explanation; exit 2
+	  +----------------+
+	        |
+	        v
+	  +----------------+
+	  | SCAN           |  App::WebPerimeterScan->run (traffic is sent)
+	  +----------------+
+	        |
+	        v
+	  +----------------+
+	  | REPORT         |  text, json or html; to STDOUT or to --output
+	  +----------------+
+	        |
+	        v
+	  +----------------+
+	  | EXIT           |  1 if a finding reached --fail-on, else 0
+	  +----------------+
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut

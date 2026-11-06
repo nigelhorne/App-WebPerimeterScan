@@ -179,28 +179,73 @@ Version 0.001.0
 
 =head1 SYNOPSIS
 
-	use App::WebPerimeterScan::Findings;
-	use App::WebPerimeterScan::Checks;
+Check one page that you have already fetched:
 
+	use App::WebPerimeterScan::Checks;
+	use App::WebPerimeterScan::Findings;
+	use App::WebPerimeterScan::HTTP;
+
+	my $http     = App::WebPerimeterScan::HTTP->new;
 	my $findings = App::WebPerimeterScan::Findings->new;
+	my $url      = 'https://example.com/';
 
 	App::WebPerimeterScan::Checks::check_page($findings,
-		host => 'example.com', url => 'https://example.com/', res => $res);
-	App::WebPerimeterScan::Checks::check_tls($findings,
-		host => 'example.com', tls => $tls);
+		host => 'example.com', url => $url, res => $http->fetch($url));
 
 	print "$_->{severity} $_->{title}\n" for @{ $findings->sorted };
 
+Check the TLS service and the open ports:
+
+	App::WebPerimeterScan::Checks::check_tls($findings,
+		host => 'example.com',
+		tls  => App::WebPerimeterScan::TLS->inspect(host => 'example.com'));
+	App::WebPerimeterScan::Checks::check_ports($findings,
+		host => 'example.com',
+		scan => App::WebPerimeterScan::Ports->scan(host => 'example.com'));
+
+Test a CORS policy with the probe origin:
+
+	my $origin = App::WebPerimeterScan::Checks::probe_origin();
+	my $res = $http->fetch($url, headers => [ "Origin: $origin" ]);
+	App::WebPerimeterScan::Checks::check_cors($findings,
+		host => 'example.com', url => $url, res => $res);
+
+Make the thresholds stricter, for every later check:
+
+	$App::WebPerimeterScan::Checks::config{tls_expiry_warn_days} = 60;
+	$App::WebPerimeterScan::Checks::config{ssh_min_version}      = '9.6';
+
 =head1 DESCRIPTION
 
-Each C<check_*> function takes the findings collector plus the data it needs
-and adds zero or more findings.  Nothing here sends an exploit: the checks are
-header analysis, response-body analysis, certificate inspection and requests
-for well-known paths that a correct deployment answers with 404.
+This module holds the rules that decide what is a problem.  Each rule has
+a short id, such as C<csp-missing>; L</RULES> lists them all.
 
-Every C<check_*> function returns the collector it was given, so calls can
-be chained.  The text of each rule is in L<App::WebPerimeterScan::Messages>
-under the rule id; this module holds only ids, severities and the logic.
+Each C<check_*> function looks at data that was already collected (a
+response, a TLS result or a port scan) and adds a finding to the
+collection for each problem it sees.  The only function that sends network
+traffic itself is C<check_paths>, which requests a fixed list of
+well-known paths.
+
+None of the checks attacks the site.  They read headers, read the page,
+read the certificate, and ask for files that a correct site answers with
+"404 Not Found".
+
+Every C<check_*> function returns the collection it was given.  The words
+of each finding are in L<App::WebPerimeterScan::Messages>; this module
+holds only the rule ids, their severities and the logic.
+
+The thresholds that a site owner might want to change are in
+C<%App::WebPerimeterScan::Checks::config>:
+
+	hsts_min_max_age      15552000   HSTS max-age below this is short
+	                                 (180 days, in seconds)
+	tls_expiry_warn_days  30         report a certificate this close to
+	                                 expiry
+	tls_expiry_high_days  14         ... as high severity below this
+	ssh_min_version       9.0        older OpenSSH banners are reported
+	excerpt_length        200        bytes of a page kept as evidence
+	mixed_content_limit   5          resources named in one finding
+	robots_limit          5          robots.txt paths named as evidence
 
 =head1 SUBROUTINES/METHODS
 
@@ -252,17 +297,6 @@ Usage: C<< check_page($findings, host => $host, url => $url, res => $res); >>
 	... (fatal)                               App::WebPerimeterScan::Findings.
 
 The findings it can add are listed in L</RULES>.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ CheckPage ─────────────────────────────────────────
-	│ ΔFindings; url? : URL; res? : RESPONSE
-	├─────────────────────────────────────────────────────
-	│ res?.error ≠ ⊥ ⇒ items' = items
-	│ res?.error = ⊥ ⇒ items' = items ⁀ headers(res?) ⁀ cookies(res?)
-	│                            ⁀ body(res?)
-	│ scheme(url?) = https ⇔ HSTS rules ⊆ rules applied
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -353,19 +387,6 @@ Usage: C<< check_cors($findings, host => $h, url => $u, res => $res); >>
 
 As C<check_page>.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ CheckCors ─────────────────────────────────────────
-	│ ΔFindings; res? : RESPONSE
-	├─────────────────────────────────────────────────────
-	│ a = last(res?.headers(access-control-allow-origin))
-	│ c ⇔ last(res?.headers(access-control-allow-credentials)) = "true"
-	│ c ∧ a ∈ {*, PROBE} ⇒ severity = high
-	│ ¬c ∧ a = PROBE ⇒ severity = medium
-	│ ¬c ∧ a = * ⇒ severity = low
-	│ a ∉ {*, PROBE} ⇒ items' = items
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub check_cors
@@ -440,16 +461,6 @@ Usage: C<< check_methods($findings, host => $h, url => $u, res => $options); >>
 
 As C<check_page>.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ CheckMethods ──────────────────────────────────────
-	│ ΔFindings; res? : RESPONSE
-	├─────────────────────────────────────────────────────
-	│ M = tokens(res?.headers(allow))
-	│ TRACE ∈ M ⇔ trace-enabled ∈ ids(items' \ items)
-	│ M ∩ {PUT, DELETE, PATCH} ≠ ∅ ⇔ write-methods-enabled ∈ ids(items' \ items)
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub check_methods
@@ -508,20 +519,6 @@ Usage: C<< check_tls($findings, host => $h, tls => $tls); >>
 =head3 MESSAGES
 
 As C<check_page>.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ CheckTls ──────────────────────────────────────────
-	│ ΔFindings; tls? : TLSRESULT
-	├─────────────────────────────────────────────────────
-	│ ¬ tls?.ok ⇒ ids(items' \ items) ⊆ {tls-unavailable, tls-legacy-protocol}
-	│ tls?.ok ⇒
-	│   (tls?.verify_error ≠ ⊥ ⇔ tls-invalid-certificate ∈ new)
-	│ ∧ (tls?.days_left < 0 ⇔ tls-expired ∈ new)
-	│ ∧ (0 ≤ tls?.days_left < warn ⇔ tls-expiring ∈ new)
-	│ ∧ (ran tls?.protocols ∩ LEGACY ≠ ∅ ⇔ tls-legacy-protocol ∈ new)
-	│ where new = ids(items' \ items)
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -604,16 +601,6 @@ Usage: C<< check_ports($findings, host => $h, scan => $scan); >>
 =head3 MESSAGES
 
 As C<check_page>.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ CheckPorts ────────────────────────────────────────
-	│ ΔFindings; scan? : SCANRESULT
-	├─────────────────────────────────────────────────────
-	│ scan?.error ≠ ⊥ ⇒ ids(items' \ items) = {portscan-failed}
-	│ ∀ p ∈ open(scan?) ∩ dom RISKY • port-open-p ∈ ids(items')
-	│ (open(scan?) \ dom RISKY \ {80, 443}) ≠ ∅ ⇔ ports-other-open ∈ ids(items')
-	└─────────────────────────────────────────────────────
 
 =head3 PSEUDOCODE
 
@@ -700,15 +687,6 @@ Usage: C<< next if fingerprint($res) eq $baseline; >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ Fingerprint ───────────────────────────────────────
-	│ res? : RESPONSE; result! : STRING
-	├─────────────────────────────────────────────────────
-	│ res? = ⊥ ∨ res?.error ≠ ⊥ ⇒ result! = ""
-	│ otherwise result! = status(res?) ⁀ ":" ⁀ #body(res?) ⁀ ":" ⁀ md5(body(res?))
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub fingerprint
@@ -770,17 +748,6 @@ Usage: C<< check_paths($findings, http => $http, host => $h, base => $base, base
 	Parameter 'http' must be an object that  Pass an HTTP client with a
 	understands the fetch method (fatal)     fetch method.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ CheckPaths ────────────────────────────────────────
-	│ ΔFindings; base? : URL; baseline? : STRING
-	├─────────────────────────────────────────────────────
-	│ ∀ p : PROBES • p.id ∈ ids(items' \ items) ⇔
-	│     let r = fetch(base? ⁀ p.path) •
-	│         r.status = 200 ∧ fingerprint(r) ≠ baseline?
-	│       ∧ r.body matches p.match
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub check_paths
@@ -834,14 +801,6 @@ Usage: C<< for my $probe (@{ sensitive_probes() }) { ... } >>
 
 None.
 
-=head3 FORMAL SPECIFICATION
-
-	┌─ SensitiveProbes ───────────────────────────────────
-	│ result! : seq PROBE
-	├─────────────────────────────────────────────────────
-	│ result! = PROBES
-	└─────────────────────────────────────────────────────
-
 =cut
 
 sub sensitive_probes
@@ -879,14 +838,6 @@ Usage: C<< $http->fetch($url, headers => [ 'Origin: ' . probe_origin() ]) >>
 =head3 MESSAGES
 
 None.
-
-=head3 FORMAL SPECIFICATION
-
-	┌─ ProbeOrigin ───────────────────────────────────────
-	│ result! : URL
-	├─────────────────────────────────────────────────────
-	│ result! = PROBE ∧ tld(PROBE) = invalid
-	└─────────────────────────────────────────────────────
 
 =cut
 
@@ -1493,27 +1444,168 @@ __END__
 
 =head1 RULES
 
-Each finding id, its usual severity and what triggers it.  The text is in
-L<App::WebPerimeterScan::Messages>.
+This is every finding this module can report, with its usual severity and
+what causes it.  The words of each finding are in
+L<App::WebPerimeterScan::Messages>, under the rule id.  The runner,
+L<App::WebPerimeterScan>, adds a few more rules of its own; they are listed
+in its documentation.
 
-	hsts-missing / -short-max-age / -no-subdomains   HTTPS page, HSTS header
-	csp-missing / -wildcard / -unsafe                CSP header, script sources
-	clickjacking                                     no XFO, no frame-ancestors
-	nosniff-missing, referrer-policy-missing,
-	permissions-policy-missing                       header absent
-	server-version-disclosed, x-powered-by,
-	generator-disclosed                              version disclosure
-	php2shell                                        PHP below the fix level
-	cookie-flags                                     Secure/HttpOnly/SameSite
-	directory-listing, error-disclosure              response body
-	mixed-content-active / -passive                  http:// resources on HTTPS
-	cors-misconfiguration                            CORS probe response
-	trace-enabled, write-methods-enabled             OPTIONS response
-	tls-*                                            TLS inspection
-	port-open-N, ports-other-open,
-	outdated-ssh-banner                              port scan
-	(probe ids), security-txt-present,
-	robots-disclosure                                path probes
+Page rules (C<check_page>):
+
+	Rule id                      Severity  Reported when
+	---------------------------  --------  ------------------------------------
+	hsts-missing                 medium    an HTTPS page has no
+	                                       Strict-Transport-Security header
+	hsts-short-max-age           low       HSTS max-age is under 180 days
+	hsts-no-subdomains           info      HSTS has no includeSubDomains
+	csp-missing                  medium    no Content-Security-Policy header
+	csp-wildcard                 medium    script-src or default-src allows any
+	                                       origin (*, http:, https:, data:)
+	csp-unsafe                   low       script-src or default-src allows
+	                                       'unsafe-inline' or 'unsafe-eval'
+	clickjacking                 medium    no X-Frame-Options and no CSP
+	                                       frame-ancestors
+	nosniff-missing              low       X-Content-Type-Options is not nosniff
+	referrer-policy-missing      low       no Referrer-Policy header
+	permissions-policy-missing   info      no Permissions-Policy header
+	server-version-disclosed     low       the Server header has a version
+	x-powered-by                 low       an X-Powered-By header is sent
+	generator-disclosed          info      a generator meta tag names software
+	php2shell                    critical  X-Powered-By shows a PHP version
+	                                       without the PHP2Shell fix
+	cookie-flags                 medium    a cookie lacks Secure
+	                             low       a cookie lacks HttpOnly or SameSite
+	directory-listing            medium    the page is a directory index
+	error-disclosure             medium    the page shows a stack trace or
+	                                       a database error
+	mixed-content-active         high      an HTTPS page loads, over http://,
+	                                       a script, style sheet, frame,
+	                                       iframe, embed or object, or has a
+	                                       form that sends to http://
+	mixed-content-passive        low       an HTTPS page loads an image, icon,
+	                                       audio, video or media source over
+	                                       http://
+
+Probe rules (C<check_cors>, C<check_methods>):
+
+	cors-misconfiguration        high      the probe origin may read responses
+	                                       with credentials
+	                             medium    the probe origin is reflected
+	                             low       Access-Control-Allow-Origin is *
+	trace-enabled                medium    OPTIONS lists TRACE
+	write-methods-enabled        low       OPTIONS lists PUT, DELETE or PATCH
+
+TLS rules (C<check_tls>):
+
+	tls-unavailable              medium    no TLS handshake was possible
+	tls-invalid-certificate      high      the chain or the name does not verify
+	tls-self-signed              high      the certificate is self-signed
+	tls-expired                  high      the certificate has expired
+	tls-expiring                 high      it expires within 14 days
+	                             medium    it expires within 30 days
+	tls-legacy-protocol          high      TLS 1.0 is accepted
+	                             medium    TLS 1.1 is accepted, and not 1.0
+	tls-weak-cipher              high      the default cipher is weak (RC4,
+	                                       3DES, NULL, EXPORT, MD5 or an
+	                                       anonymous suite)
+
+Port rules (C<check_ports>):
+
+	port-open-N                  varies    port N is one of the risky ports in
+	                                       %App::WebPerimeterScan::Ports::RISKY;
+	                                       critical for 21 (FTP) and 23 (Telnet),
+	                                       medium for 5900 (VNC), high for the
+	                                       others
+	ports-other-open             info      other ports than 80 and 443 are open
+	outdated-ssh-banner          medium    an OpenSSH banner is older than 9.0
+	portscan-failed              info      the port scan could not run
+
+Path rules (C<check_paths>).  Each probe is reported only when the path
+answers 200, the body looks like the real file (each probe has its own
+pattern), and, when a C<baseline> is given, the response differs from the
+server's answer for a path that does not exist:
+
+	git-exposed                  critical  /.git/config
+	git-head                     high      /.git/HEAD
+	svn-exposed                  high      /.svn/entries
+	env-exposed                  critical  /.env
+	htpasswd-exposed             critical  /.htpasswd
+	htaccess-exposed             medium    /.htaccess
+	web-config-exposed           high      /web.config
+	php-config-backup            critical  /wp-config.php.bak
+	sql-dump-exposed             critical  /backup.sql
+	ds-store-exposed             low       /.DS_Store
+	server-status-exposed        high      /server-status
+	server-info-exposed          medium    /server-info
+	phpinfo-exposed              high      /phpinfo.php
+	spring-actuator-exposed      critical  /actuator/env
+	spring-health-exposed        low       /actuator/health
+	composer-json-exposed        low       /composer.json
+	package-json-exposed         low       /package.json
+	crossdomain-xml              medium    /crossdomain.xml
+	security-txt-present         info      /.well-known/security.txt exists
+	                                       and has a Contact: line
+	robots-disclosure            info      robots.txt lists Disallow paths
+
+=head1 COMMON PITFALLS
+
+=over 4
+
+=item * B<These are functions, not methods.>  Call
+C<App::WebPerimeterScan::Checks::check_page($findings, ...)>.  The findings
+collection is always the first argument.
+
+=item * B<C<check_paths> sends requests; the scope is not checked here.>
+It requests about twenty paths on C<base>.  Check that the host is in
+scope before you call it.
+
+=item * B<A failed response is not a finding.>  When C<res> has an
+C<error>, the page, CORS and OPTIONS checks add nothing.  A host that
+could not be reached is reported by the runner, not here.
+
+=item * B<A header rule is reported once for each host.>  C<check_page>
+records header findings such as C<csp-missing> with an empty C<url>.  So
+calling it for ten pages that all lack the header gives one finding, not
+ten.  It also means that a page that I<has> the header does not cancel
+the finding from a page that lacks it.
+
+=item * B<Pass a CORS response from the probe origin.>  C<check_cors>
+judges the response to a request that sent
+C<Origin: https://ws-probe.invalid> (from C<probe_origin>).  A response to
+a normal request proves nothing.
+
+=item * B<C<%config> is shared.>  A change to
+C<%App::WebPerimeterScan::Checks::config> affects every later check in the
+program.  Use C<local> to change it for one block only.
+
+=item * B<Leave C<tls> or C<scan> out when there is nothing to judge.>
+When the argument is missing, C<check_tls> and C<check_ports> add nothing.
+An empty hash is different for C<check_tls>: it has no C<ok>, so it is
+read as a failed handshake and C<tls-unavailable> is reported.
+C<portscan-failed> is reported only when the scan result has an C<error>.
+
+=back
+
+=head1 ENCODING
+
+=over 4
+
+=item * B<Page bodies are bytes.>  The checks search the raw bytes, and the
+markers they look for (headers, tag names, error messages) are ASCII.  A
+page in any character set, including UTF-8 with emoji, is checked
+correctly.
+
+=item * B<Evidence is cut by bytes.>  An excerpt of a page keeps at most
+C<excerpt_length> bytes and adds C<...>.  The cut can fall inside a UTF-8
+character, so the last character before C<...> may be shown as a
+replacement character.
+
+=item * B<Header values are copied as they arrived.>  A header that
+contains non-ASCII bytes appears in the evidence unchanged.
+
+=item * B<Rule ids, severities and the probe paths are ASCII.>
+
+=back
 
 =head1 LIMITATIONS
 
@@ -1533,8 +1625,207 @@ script or CSS at run time are not seen.
 
 =back
 
-=head1 LICENSE
+=head1 FORMAL SPECIFICATION
 
-GPL2
+This section states exactly what each method does, in the Z notation.  You
+do not need it to use the module: the method descriptions above say the same
+thing in words.  It is here for reviewers and for anyone who writes tests.
+
+How to read a schema box:
+
+=over 4
+
+=item * The part above the middle line declares names.  A name that ends in
+C<?> is an input.  A name that ends in C<!> is an output.
+
+=item * The part below the middle line lists facts that are true after the
+call.
+
+=item * A name with a dash after it, such as C<items'>, is the value after
+the call.  The same name without the dash is the value before the call.
+
+=item * C<Delta X> (written with the Greek capital delta) means the call
+may change the state C<X>.  C<Xi X> (the Greek capital xi) means the call
+does not change it.
+
+=back
+
+The symbols used are:
+
+	Δ   may change            Ξ   does not change      •   such that
+	∀   for all               ∃   there is             ¬   not
+	∧   and                   ∨   or                   ⇒   implies
+	⇔   if and only if        ≠   not equal            ≤ ≥ at most, at least
+	∈   is in                 ∉   is not in            ⊆   is a subset of
+	∪   union                 ∩   intersection         ∅   the empty set
+	ℙ X sets of X             ⊥   undefined (undef)    …   and so on
+	⟨⟩  the empty sequence    ⁀   join sequences       ⇸   partial mapping
+	↦   maps to               ⊕   override a mapping   ↾   keep only these keys
+	∘   compose               →   function             × ÷ − times, divide, minus
+	ℕ   0, 1, 2, ...          ℕ₁  1, 2, 3, ...         ℝ   real numbers
+	𝔹   true or false         ⌊x⌋ x rounded down
+	dom M  the keys of M      ran M  the values of M   #S  the size of S
+
+
+=head2 check_page
+
+	┌─ CheckPage ─────────────────────────────────────────
+	│ ΔFindings; url? : URL; res? : RESPONSE
+	├─────────────────────────────────────────────────────
+	│ res?.error ≠ ⊥ ⇒ items' = items
+	│ res?.error = ⊥ ⇒ items' = items ⁀ headers(res?) ⁀ cookies(res?)
+	│                            ⁀ body(res?)
+	│ scheme(url?) = https ⇔ HSTS rules ⊆ rules applied
+	└─────────────────────────────────────────────────────
+
+=head2 check_cors
+
+	┌─ CheckCors ─────────────────────────────────────────
+	│ ΔFindings; res? : RESPONSE
+	├─────────────────────────────────────────────────────
+	│ a = last(res?.headers(access-control-allow-origin))
+	│ c ⇔ last(res?.headers(access-control-allow-credentials)) = "true"
+	│ c ∧ a ∈ {*, PROBE} ⇒ severity = high
+	│ ¬c ∧ a = PROBE ⇒ severity = medium
+	│ ¬c ∧ a = * ⇒ severity = low
+	│ a ∉ {*, PROBE} ⇒ items' = items
+	└─────────────────────────────────────────────────────
+
+=head2 check_methods
+
+	┌─ CheckMethods ──────────────────────────────────────
+	│ ΔFindings; res? : RESPONSE
+	├─────────────────────────────────────────────────────
+	│ M = tokens(res?.headers(allow))
+	│ TRACE ∈ M ⇔ trace-enabled ∈ ids(items' \ items)
+	│ M ∩ {PUT, DELETE, PATCH} ≠ ∅ ⇔ write-methods-enabled ∈ ids(items' \ items)
+	└─────────────────────────────────────────────────────
+
+=head2 check_tls
+
+	┌─ CheckTls ──────────────────────────────────────────
+	│ ΔFindings; tls? : TLSRESULT
+	├─────────────────────────────────────────────────────
+	│ ¬ tls?.ok ⇒ ids(items' \ items) ⊆ {tls-unavailable, tls-legacy-protocol}
+	│ tls?.ok ⇒
+	│   (tls?.verify_error ≠ ⊥ ⇔ tls-invalid-certificate ∈ new)
+	│ ∧ (tls?.days_left < 0 ⇔ tls-expired ∈ new)
+	│ ∧ (0 ≤ tls?.days_left < warn ⇔ tls-expiring ∈ new)
+	│ ∧ (ran tls?.protocols ∩ LEGACY ≠ ∅ ⇔ tls-legacy-protocol ∈ new)
+	│ where new = ids(items' \ items)
+	└─────────────────────────────────────────────────────
+
+=head2 check_ports
+
+	┌─ CheckPorts ────────────────────────────────────────
+	│ ΔFindings; scan? : SCANRESULT
+	├─────────────────────────────────────────────────────
+	│ scan?.error ≠ ⊥ ⇒ ids(items' \ items) = {portscan-failed}
+	│ ∀ p ∈ open(scan?) ∩ dom RISKY • port-open-p ∈ ids(items')
+	│ (open(scan?) \ dom RISKY \ {80, 443}) ≠ ∅ ⇔ ports-other-open ∈ ids(items')
+	└─────────────────────────────────────────────────────
+
+=head2 fingerprint
+
+	┌─ Fingerprint ───────────────────────────────────────
+	│ res? : RESPONSE; result! : STRING
+	├─────────────────────────────────────────────────────
+	│ res? = ⊥ ∨ res?.error ≠ ⊥ ⇒ result! = ""
+	│ otherwise result! = status(res?) ⁀ ":" ⁀ #body(res?) ⁀ ":" ⁀ md5(body(res?))
+	└─────────────────────────────────────────────────────
+
+=head2 check_paths
+
+	┌─ CheckPaths ────────────────────────────────────────
+	│ ΔFindings; base? : URL; baseline? : STRING
+	├─────────────────────────────────────────────────────
+	│ ∀ p : PROBES • p.id ∈ ids(items' \ items) ⇔
+	│     let r = fetch(base? ⁀ p.path) •
+	│         r.status = 200 ∧ fingerprint(r) ≠ baseline?
+	│       ∧ r.body matches p.match
+	└─────────────────────────────────────────────────────
+
+=head2 sensitive_probes
+
+	┌─ SensitiveProbes ───────────────────────────────────
+	│ result! : seq PROBE
+	├─────────────────────────────────────────────────────
+	│ result! = PROBES
+	└─────────────────────────────────────────────────────
+
+=head2 probe_origin
+
+	┌─ ProbeOrigin ───────────────────────────────────────
+	│ result! : URL
+	├─────────────────────────────────────────────────────
+	│ result! = PROBE ∧ tld(PROBE) = invalid
+	└─────────────────────────────────────────────────────
+
+=head1 STATE DIAGRAM
+
+This module keeps no state of its own, except C<%config>.  The only state
+that changes is the findings collection passed in: each check can only
+add to it.
+
+Every C<check_*> function:
+
+	  check_xxx(findings, named arguments)
+	        |
+	        v
+	  +----------------+
+	  |   VALIDATE     |--- findings is not a collection, or a named
+	  +----------------+    argument is unknown or has the wrong type
+	        |                  -> croak; nothing added
+	        |
+	        |  the data to judge is missing, or is a failed response
+	        |-------------------> return findings; nothing added
+	        v
+	  +----------------+
+	  |  APPLY RULES   |  each rule that matches adds one finding
+	  +----------------+  (a duplicate of one already held is ignored)
+	        |
+	        v
+	  return findings (now holding n + k findings, k >= 0)
+
+C<check_paths>, the one check that sends requests:
+
+	  check_paths(findings, http, base, baseline)
+	        |
+	        v
+	  +----------------+
+	  |  FOR EACH      |<---------------------------------------+
+	  |  PROBE PATH    |                                        |
+	  +----------------+                                        |
+	        |                                                   |
+	        |  http->fetch(base . path)                         |
+	        v                                                   |
+	  +----------------+   failed, not 200, same as the         |
+	  |   COMPARE      |   baseline, or body does not match     |
+	  +----------------+---------> no finding ------------------+
+	        |                                                   |
+	        |  200, differs from the baseline, body matches     |
+	        +-------------> add the probe's finding ------------+
+	        |
+	        |  after the last probe
+	        v
+	  +----------------+
+	  | SECURITY.TXT   |  fetch /.well-known/security.txt;
+	  +----------------+  200 with a Contact: line ->
+	        |             security-txt-present
+	        |
+	        v
+	  +----------------+
+	  | ROBOTS.TXT     |  fetch /robots.txt; Disallow lines ->
+	  +----------------+  robots-disclosure
+	        |
+	        v
+	  return findings
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2026 Nigel Horne.
+
+This program is free software, released under the GNU General Public
+License, version 2 (GPL2).  See the F<LICENSE> file.
 
 =cut
