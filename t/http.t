@@ -54,7 +54,13 @@ subtest 'header parsing' => sub {
 	is(App::WebPerimeterScan::HTTP::_parse_head("SSH-2.0-OpenSSH_9.6\r\n"), undef, 'a non-HTTP reply is refused');
 };
 
-plan skip_all => 'the loopback test server needs fork' if $^O eq 'MSWin32';
+# plan skip_all is only valid before the first test, and the subtests above
+# have run, so stop here with done_testing instead.
+if($^O eq 'MSWin32') {
+	note('skipping the loopback server tests: the test server needs fork');
+	done_testing();
+	exit 0;
+}
 require TestServer;
 
 my $server = TestServer->start(
@@ -67,7 +73,12 @@ my $server = TestServer->start(
 	'/big'     => [ 200, [], 'x' x 5000 ],
 	'/eof'     => "HTTP/1.1 200 OK\r\n\r\nread to the end",
 	'/garbage' => "this is not HTTP\r\n\r\n",
-) or plan skip_all => 'cannot start the test server';
+);
+unless($server) {
+	note('skipping the loopback server tests: cannot start the test server');
+	done_testing();
+	exit 0;
+}
 
 my $http = App::WebPerimeterScan::HTTP->new(delay => 0, timeout => 5, max_size => 1000);
 

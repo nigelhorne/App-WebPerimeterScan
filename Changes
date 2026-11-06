@@ -41,6 +41,9 @@ Revision history for App-WebPerimeterScan
 	  treated as private, while multicast, TEST-NET, benchmarking and IPv6
 	  private ranges were not; every address a name resolves to is checked,
 	  not only the first
+	- Classify IP address literals without a DNS lookup, so ::1 and other
+	  private IPv6 literals are refused even where getaddrinfo cannot parse
+	  them (older Windows Perls)
 	- Refuse private targets reached by following links through a wildcard
 	  scope entry, which bypassed --allow-private
 	- Run the HTTP-to-HTTPS check for scope entries given as https:// URLs

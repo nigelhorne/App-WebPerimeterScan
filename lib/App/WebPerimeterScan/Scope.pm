@@ -675,6 +675,12 @@ sub _addresses :Private
 
 	return [] unless defined $host && length $host;
 	(my $name = $host) =~ s/\A\[(.*)\]\z/$1/;
+	(my $literal = $name) =~ s/%.*\z//;	# an IPv6 zone index such as %eth0
+
+	# An address literal needs no lookup, and must not depend on one: some
+	# Windows builds of getaddrinfo fail on IPv6 literals, and an empty
+	# result here would let ::1 through as "not private".
+	return [ $literal ] if is_ipv4($literal) || is_ipv6($literal);
 
 	my ($error, @results) = getaddrinfo($name, '', { socktype => SOCK_STREAM });
 	return [] if $error;

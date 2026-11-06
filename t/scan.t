@@ -58,7 +58,13 @@ subtest 'constructor validation' => sub {
 	like($@, qr/No scope was given/, '... with the catalogued message');
 };
 
-plan skip_all => 'the loopback test server needs fork' if $^O eq 'MSWin32';
+# plan skip_all is only valid before the first test, and the subtests above
+# have run, so stop here with done_testing instead.
+if($^O eq 'MSWin32') {
+	note('skipping the loopback server tests: the test server needs fork');
+	done_testing();
+	exit 0;
+}
 require TestServer;
 
 my $page = <<'HTML';
@@ -81,7 +87,12 @@ my $server = TestServer->start(
 	'/about'       => [ 200, [ 'Content-Type: text/html' ], '<html><title>About</title></html>' ],
 	'/.git/config' => [ 200, [], "[core]\n\trepositoryformatversion = 0\n" ],
 	'/robots.txt'  => [ 200, [], "User-agent: *\nDisallow: /admin\n" ],
-) or plan skip_all => 'cannot start the test server';
+);
+unless($server) {
+	note('skipping the loopback server tests: cannot start the test server');
+	done_testing();
+	exit 0;
+}
 
 my $port = $server->port;
 

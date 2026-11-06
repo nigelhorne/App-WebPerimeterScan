@@ -104,6 +104,21 @@ subtest 'private address space' => sub {
 	ok(!$scope->is_private_target('name.invalid'), 'a name that does not resolve is not private');
 };
 
+subtest 'address literals do not depend on the resolver' => sub {
+	# Older Windows Perls fail getaddrinfo on IPv6 literals, which used to
+	# let ::1 through as "not private".  Make every lookup fail to prove a
+	# literal is classified without one.
+	no warnings 'redefine';
+	local *App::WebPerimeterScan::Scope::getaddrinfo = sub { return ('lookup disabled by the test') };
+
+	ok($scope->is_private_target('::1'), 'IPv6 loopback');
+	ok($scope->is_private_target('[fe80::1]'), 'bracketed IPv6 link-local');
+	ok($scope->is_private_target('fe80::1%eth0'), 'IPv6 with a zone index');
+	ok($scope->is_private_target('127.0.0.1'), 'IPv4 loopback');
+	ok(!$scope->is_private_target('2606:4700::1'), 'a public IPv6 literal is still public');
+	ok(!$scope->is_private_target('localhost'), 'a name now resolves to nothing, as on the failing platform');
+};
+
 subtest 'allows' => sub {
 	my $wild = App::WebPerimeterScan::Scope->new;
 	my ($fh, $file) = tempfile(UNLINK => 1);

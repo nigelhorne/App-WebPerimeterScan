@@ -4,7 +4,7 @@ use warnings;
 use FindBin;
 use lib "$FindBin::Bin/../lib";
 
-use Errno qw(ENOENT ECONNREFUSED);
+use Errno qw(ENOENT ECONNREFUSED ETIMEDOUT);
 use File::Temp qw(tempdir);
 use IO::Socket::INET;
 use POSIX qw(setlocale LC_ALL);
@@ -75,15 +75,20 @@ for my $locale (@LOCALES) {
 		unlike($clean, qr/ line \d+\.?\z/, 'clean_error removes the location in this locale too');
 
 		SKIP: {
-			skip 'connection-refused behaviour differs on Windows', 2 if $^O eq 'MSWin32';
+			skip 'connection-failure behaviour differs on Windows', 2 if $^O eq 'MSWin32';
 			my $closed = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => 0, Proto => 'tcp')
 				or skip 'cannot bind a port', 2;
 
-			my $refused = do { local $! = ECONNREFUSED; "$!" };
+			# A port that is bound but not listening is refused on Linux,
+			# but macOS drops the SYN and the connect times out.  Either
+			# way the reason must be Perl's own text for that errno.
+			my @reasons = map { local $! = $_; "$!" } ECONNREFUSED, ETIMEDOUT;
 			my $res = App::WebPerimeterScan::HTTP->new(delay => 0, timeout => 2)
 				->fetch('http://127.0.0.1:' . $closed->sockport . '/');
-			ok($res->{error}, 'a refused connection is reported, not thrown');
-			is($res->{error}, "connect failed: $refused", "... with Perl's text for ECONNREFUSED");
+			ok($res->{error}, 'a failed connection is reported, not thrown');
+			like($res->{error}, qr/\Aconnect failed: (?:\Q$reasons[0]\E|\Q$reasons[1]\E)\z/,
+				"... with Perl's text for ECONNREFUSED or ETIMEDOUT")
+				or diag "expected one of: @reasons";
 		}
 
 		# Concurrent objects in one process see the same locale.

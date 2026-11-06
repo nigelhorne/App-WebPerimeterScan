@@ -68,7 +68,7 @@ subtest 'missing keys' => sub {
 
 subtest 'language selection' => sub {
 	local $catalogue->{de} = { 'test.plain' => 'Hallo {name}' };
-	local $App::WebPerimeterScan::PLURAL_RULE{de};
+	local $App::WebPerimeterScan::I18N::PLURAL_RULE{de};
 
 	local $ENV{LC_ALL} = 'de_DE.UTF-8';
 	is($I18N->language, 'de', 'LC_ALL selects a language that has a catalogue');
