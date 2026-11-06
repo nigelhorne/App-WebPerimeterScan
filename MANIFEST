@@ -20,3 +20,4 @@ t/ports.t
 t/report.t
 t/scope.t
 t/source.t
+t/tls.t

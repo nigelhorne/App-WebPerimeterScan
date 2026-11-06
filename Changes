@@ -8,6 +8,12 @@ Revision history for App::WebPerimeterScan
     - Fall back to connecting one port at a time where fcntl(F_SETFL) does
       not exist.  Windows has no such flags, and the scan died on the
       undefined F_GETFL macro instead of returning a result.
+    - Report the certificate subject and issuer when IO::Socket::SSL hands
+      them back as plain strings.  Both names came out empty, compared equal,
+      and every certificate was reported as self-signed.
+    - Read the certificate expiry through Net::SSLeay when IO::Socket::SSL
+      does not offer not_after from peer_certificate(), so expired and
+      soon-to-expire certificates are reported instead of skipped.
 
 0.02  2026-11-05
     - Add a source-aware pass.  --docroot resolves each finding's URL to the

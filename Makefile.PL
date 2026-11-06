@@ -15,6 +15,7 @@ WriteMakefile(
 		'IO::Socket::INET'       => 1.35,
 		'IO::Socket::SSL'        => 2.000,
 		'JSON::PP'               => 4.00,
+		'Net::SSLeay'            => 1.46,
 		'POSIX'                  => 0,
 		'Socket'                 => 2.020,
 		'Term::ANSIColor'        => 0,

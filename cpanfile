@@ -9,6 +9,7 @@ requires 'IO::Select', '1.20';
 requires 'IO::Socket::INET', '1.35';
 requires 'IO::Socket::SSL', '2.000';
 requires 'JSON::PP', '4.00';
+requires 'Net::SSLeay', '1.46';
 requires 'POSIX';
 requires 'Socket', '2.020';
 requires 'Term::ANSIColor';
